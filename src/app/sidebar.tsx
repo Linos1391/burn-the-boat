@@ -1,14 +1,28 @@
+import { useEffect, useState } from "react"
+import {
+  deleteUser,
+  getAuth,
+  onAuthStateChanged,
+  signOut,
+  type User,
+} from "firebase/auth"
+import type { FirebaseApp } from "firebase/app"
 import {
   Sidebar,
   SidebarContent,
+  SidebarFooter,
   SidebarHeader,
   SidebarMenu,
   SidebarMenuButton,
   SidebarMenuItem,
 } from "@/components/ui/sidebar"
-import { HouseIcon, Settings2 } from "lucide-react"
-import { Link, useLocation } from "react-router-dom"
+import { HouseIcon, LogOut, Settings2, UserRound } from "lucide-react"
+import { Link, useLocation, useNavigate } from "react-router-dom"
 import type { ReactNode } from "react"
+
+type BtbSidebarProps = {
+  firebaseApp: FirebaseApp | null
+}
 
 type Navigation = {
   icon: ReactNode
@@ -18,11 +32,45 @@ type Navigation = {
 
 const navigations: Navigation[] = [
   { icon: <HouseIcon />, title: "Home", href: "/home" },
-  { icon: <Settings2 />, title: "Setting", href: "/setting"}
+  { icon: <Settings2 />, title: "Setting", href: "/setting" },
 ]
 
-export default function BtbSidebar() {
+export default function BtbSidebar({ firebaseApp }: BtbSidebarProps) {
   const { pathname } = useLocation()
+  const navigate = useNavigate()
+  const auth = firebaseApp ? getAuth(firebaseApp) : null
+  const [user, setUser] = useState<User | null>(null)
+  const [signOutError, setSignOutError] = useState<string | null>(null)
+  const [isSigningOut, setIsSigningOut] = useState(false)
+
+  useEffect(() => {
+    if (!auth) return
+
+    return onAuthStateChanged(auth, setUser)
+  }, [auth])
+
+  async function handleSignOut() {
+    if (!auth) return
+
+    setSignOutError(null)
+    setIsSigningOut(true)
+    try {
+      if (user?.isAnonymous) {
+        await deleteUser(user)
+      } else {
+        await signOut(auth)
+      }
+      navigate("/login", { replace: true })
+    } catch (error) {
+      setSignOutError(
+        error instanceof Error
+          ? error.message
+          : "Unable to sign out. Please try again."
+      )
+    } finally {
+      setIsSigningOut(false)
+    }
+  }
 
   return (
     <Sidebar collapsible="offcanvas" variant="inset">
@@ -46,6 +94,32 @@ export default function BtbSidebar() {
           ))}
         </SidebarMenu>
       </SidebarContent>
+      {user && (
+        <SidebarFooter>
+          <SidebarMenu>
+            <SidebarMenuItem>
+              <div className="flex min-w-0 items-center gap-2 px-2 py-1">
+                <UserRound aria-hidden="true" className="size-4 shrink-0" />
+                <span className="truncate text-sm">
+                  {user.email ?? "Guest Account"}
+                </span>
+              </div>
+              <SidebarMenuButton
+                onClick={handleSignOut}
+                disabled={isSigningOut}
+              >
+                <LogOut aria-hidden="true" />
+                <span>{isSigningOut ? "Signing out..." : "Sign out"}</span>
+              </SidebarMenuButton>
+              {signOutError && (
+                <p role="alert" className="px-2 text-xs text-destructive">
+                  {signOutError}
+                </p>
+              )}
+            </SidebarMenuItem>
+          </SidebarMenu>
+        </SidebarFooter>
+      )}
     </Sidebar>
   )
 }

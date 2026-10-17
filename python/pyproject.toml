@@ -7,7 +7,9 @@ authors = [
     { name = "Linos1391", email = "linos.coding@gmail.com" }
 ]
 requires-python = ">=3.14"
-dependencies = []
+dependencies = [
+    "fastapi>=0.143.2",
+]
 
 [project.scripts]
 burn-the-boat = "burn_the_boat:main"
