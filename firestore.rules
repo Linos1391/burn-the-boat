@@ -1,0 +1,218 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function validDisplayName(value) {
+      return value is string && value.size() > 0 && value.size() <= 80;
+    }
+
+    function inviteNotExpired(invite) {
+      return invite.createdAt + duration.value(5, 'm') > request.time;
+    }
+
+    function pairingInvitePath(code) {
+      return /databases/$(database)/documents/pairingInvites/$(code);
+    }
+
+    function activeInvitePath(uid) {
+      return /databases/$(database)/documents/pairingActiveInvites/$(uid);
+    }
+
+    function pairingId(uid1, uid2) {
+      return uid1 < uid2
+        ? uid1 + "_" + uid2
+        : uid2 + "_" + uid1;
+    }
+
+    function pairingPath(uid1, uid2) {
+      return /databases/$(database)/documents/pairing/$(pairingId(uid1, uid2));
+    }
+
+    function activeInvitePointsTo(uid, code) {
+      return existsAfter(activeInvitePath(uid)) &&
+        getAfter(activeInvitePath(uid)).data.code == code;
+    }
+
+    function newActiveInviteIsValid(uid, code) {
+      return existsAfter(pairingInvitePath(code)) &&
+        getAfter(pairingInvitePath(code)).data.ownerUid == uid &&
+        getAfter(pairingInvitePath(code)).data.createdAt + duration.value(5, 'm') >
+          request.time;
+    }
+
+    function previousActiveInviteCanBeReplaced() {
+      let previousInvite = pairingInvitePath(resource.data.code);
+      return !exists(previousInvite) ||
+        !inviteNotExpired(get(previousInvite).data);
+    }
+
+    function activeInviteIsBeingRemoved(uid, code) {
+      let invite = pairingInvitePath(code);
+      let activeInvite = activeInvitePath(uid);
+      return exists(invite) &&
+        get(invite).data.ownerUid == uid &&
+        !existsAfter(invite) &&
+        exists(activeInvite) &&
+        get(activeInvite).data.code == code &&
+        !existsAfter(activeInvite);
+    }
+
+    function pairingInviteIsBeingRedeemed(code, ownerUid) {
+      let invite = pairingInvitePath(code);
+      let activeInvite = activeInvitePath(ownerUid);
+      let pairing = pairingPath(ownerUid, request.auth.uid);
+      return request.auth.uid != ownerUid &&
+        existsAfter(pairing) &&
+        getAfter(pairing).data.code == code &&
+        getAfter(pairing).data.ownerUid == ownerUid &&
+        getAfter(pairing).data.partnerUid == request.auth.uid &&
+        !existsAfter(invite) &&
+        exists(activeInvite) &&
+        get(activeInvite).data.code == code &&
+        !existsAfter(activeInvite);
+    }
+
+    function validPairingCreate(id) {
+      let invite = pairingInvitePath(request.resource.data.code);
+      let activeInvite = activeInvitePath(request.resource.data.ownerUid);
+      return signedIn() &&
+        request.resource.data.keys().hasAll([
+          "code",
+          "ownerUid",
+          "ownerName",
+          "createdAt",
+          "partnerUid",
+          "partnerName",
+          "pairedAt"
+        ]) &&
+        request.resource.data.keys().hasOnly([
+          "code",
+          "ownerUid",
+          "ownerName",
+          "createdAt",
+          "partnerUid",
+          "partnerName",
+          "pairedAt"
+        ]) &&
+        request.resource.data.code.matches("^[A-HJ-NP-Z2-9]{12}$") &&
+        request.resource.data.ownerUid is string &&
+        request.resource.data.partnerUid is string &&
+        request.resource.data.ownerUid != request.resource.data.partnerUid &&
+        request.auth.uid == request.resource.data.partnerUid &&
+        id == pairingId(
+          request.resource.data.ownerUid,
+          request.resource.data.partnerUid
+        ) &&
+        validDisplayName(request.resource.data.ownerName) &&
+        validDisplayName(request.resource.data.partnerName) &&
+        request.resource.data.pairedAt == request.time &&
+        !exists(pairingPath(
+          request.resource.data.ownerUid,
+          request.resource.data.partnerUid
+        )) &&
+        exists(invite) &&
+        get(invite).data.ownerUid == request.resource.data.ownerUid &&
+        get(invite).data.ownerName == request.resource.data.ownerName &&
+        get(invite).data.createdAt == request.resource.data.createdAt &&
+        inviteNotExpired(get(invite).data) &&
+        exists(activeInvite) &&
+        get(activeInvite).data.code == request.resource.data.code &&
+        !existsAfter(invite) &&
+        !existsAfter(activeInvite);
+    }
+
+    match /pairingActiveInvites/{uid} {
+      allow get: if signedIn() && uid == request.auth.uid;
+
+      allow create: if signedIn() &&
+        uid == request.auth.uid &&
+        request.resource.data.keys().hasOnly(["code", "createdAt"]) &&
+        request.resource.data.code.matches("^[A-HJ-NP-Z2-9]{12}$") &&
+        request.resource.data.createdAt == request.time &&
+        newActiveInviteIsValid(uid, request.resource.data.code);
+
+      allow update: if signedIn() &&
+        uid == request.auth.uid &&
+        previousActiveInviteCanBeReplaced() &&
+        request.resource.data.keys().hasOnly(["code", "createdAt"]) &&
+        request.resource.data.code.matches("^[A-HJ-NP-Z2-9]{12}$") &&
+        request.resource.data.createdAt == request.time &&
+        newActiveInviteIsValid(uid, request.resource.data.code);
+
+      allow list: if false;
+
+      allow delete: if signedIn() && (
+        (
+          uid == request.auth.uid &&
+          activeInviteIsBeingRemoved(uid, resource.data.code)
+        ) ||
+        pairingInviteIsBeingRedeemed(resource.data.code, uid)
+      );
+    }
+
+    match /pairingInvites/{code} {
+      allow get: if signedIn() && (
+        resource == null ||
+        resource.data.ownerUid == request.auth.uid ||
+        inviteNotExpired(resource.data)
+      );
+
+      allow list: if signedIn() &&
+        resource.data.ownerUid == request.auth.uid;
+
+      allow create: if signedIn() &&
+        code.matches("^[A-HJ-NP-Z2-9]{12}$") &&
+        request.resource.data.keys().hasAll([
+          "ownerUid",
+          "ownerName",
+          "createdAt"
+        ]) &&
+        request.resource.data.keys().hasOnly([
+          "ownerUid",
+          "ownerName",
+          "createdAt"
+        ]) &&
+        request.resource.data.ownerUid == request.auth.uid &&
+        validDisplayName(request.resource.data.ownerName) &&
+        request.resource.data.createdAt == request.time &&
+        activeInvitePointsTo(request.auth.uid, code);
+
+      allow update: if false;
+
+      allow delete: if signedIn() && (
+        (
+          resource.data.ownerUid == request.auth.uid &&
+          (
+            !inviteNotExpired(resource.data) ||
+            activeInviteIsBeingRemoved(request.auth.uid, code)
+          )
+        ) ||
+        pairingInviteIsBeingRedeemed(code, resource.data.ownerUid)
+      );
+    }
+
+    match /pairing/{id} {
+      allow get: if signedIn() && (
+        resource == null ||
+        request.auth.uid == resource.data.ownerUid ||
+        request.auth.uid == resource.data.partnerUid
+      );
+
+      allow list: if signedIn() && (
+        request.auth.uid == resource.data.ownerUid ||
+        request.auth.uid == resource.data.partnerUid
+      );
+
+      allow create: if validPairingCreate(id);
+      allow update: if false;
+      allow delete: if signedIn() &&
+        (
+          request.auth.uid == resource.data.ownerUid ||
+          request.auth.uid == resource.data.partnerUid
+        );
+    }
+  }
+}

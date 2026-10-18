@@ -50,9 +50,7 @@ function getErrorMessage(error: unknown) {
     : "Something went wrong. Please try again."
 }
 
-export default function VerifyEmailPage({
-  firebaseApp,
-}: VerifyEmailPageProps) {
+export default function VerifyEmailPage({ firebaseApp }: VerifyEmailPageProps) {
   const navigate = useNavigate()
   const auth: Auth | null = firebaseApp ? getAuth(firebaseApp) : null
   const [user, setUser] = useState<User | null>(null)
@@ -88,7 +86,8 @@ export default function VerifyEmailPage({
         console.error("Failed to determine the current Firebase user.", error)
         setFeedback({
           kind: "error",
-          message: "We couldn't check your sign-in status. Refresh and try again.",
+          message:
+            "We couldn't check your sign-in status. Refresh and try again.",
         })
         setIsLoading(false)
       }
@@ -126,7 +125,8 @@ export default function VerifyEmailPage({
       } else {
         setFeedback({
           kind: "error",
-          message: "Your email isn't verified yet. Open the link in your email, then try again.",
+          message:
+            "Your email isn't verified yet. Open the link in your email, then try again.",
         })
       }
     } catch (error) {
@@ -161,7 +161,7 @@ export default function VerifyEmailPage({
     )
   }
 
-  if (!auth) {
+  if (!auth || !user || !user.email) {
     return <Navigate to="/login" replace />
   }
 
@@ -178,9 +178,11 @@ export default function VerifyEmailPage({
             </CardTitle>
             <CardDescription className="leading-relaxed">
               To continue, verify this email address:{" "}
-              <span className="font-medium text-foreground">
-                {user?.email ?? "your email address"}
-              </span>
+              {
+                <span className="font-medium text-foreground">
+                  {user?.email}
+                </span>
+              }
               . Open the link from your inbox, then come back here. If you
               don&apos;t see it, check your spam folder or request another.
             </CardDescription>

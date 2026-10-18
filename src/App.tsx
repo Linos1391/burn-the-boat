@@ -10,6 +10,7 @@ import {
 import { Skeleton } from "./components/ui/skeleton"
 import BtbSidebar from "./app/sidebar"
 import HomePage from "./app/home"
+import PairingPage from "./app/pairing"
 import SettingPage from "./app/setting"
 import LoginPage from "./app/login"
 import VerifyEmailPage from "./app/verify-email"
@@ -90,7 +91,26 @@ function AppLayout() {
       <SidebarInset>
         <SidebarTrigger />
         <Routes>
-          <Route path="/home" element={<HomePage />} />
+          <Route
+            path="/home"
+            element={
+              <HomePage
+                key={user?.uid ?? null}
+                firebaseApp={firebaseApp}
+                user={user}
+              />
+            }
+          />
+          <Route
+            path="/pairing"
+            element={
+              user && firebaseApp ? (
+                <PairingPage firebaseApp={firebaseApp} user={user} />
+              ) : (
+                <Navigate to="/login" replace />
+              )
+            }
+          />
           <Route path="/setting" element={<SettingPage />} />
           <Route path="*" element={<Navigate to="/login" replace />} />
         </Routes>

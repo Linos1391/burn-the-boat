@@ -1,4 +1,5 @@
-import { useEffect, useState } from "react"
+import { useEffect, useState, type ReactNode } from "react"
+import { Link, useLocation, useNavigate } from "react-router-dom"
 import {
   deleteUser,
   getAuth,
@@ -16,9 +17,13 @@ import {
   SidebarMenuButton,
   SidebarMenuItem,
 } from "@/components/ui/sidebar"
-import { HouseIcon, LogOut, Settings2, UserRound } from "lucide-react"
-import { Link, useLocation, useNavigate } from "react-router-dom"
-import type { ReactNode } from "react"
+import {
+  HouseIcon,
+  LogOut,
+  Settings2,
+  UserRound,
+  UsersRound,
+} from "lucide-react"
 
 type BtbSidebarProps = {
   firebaseApp: FirebaseApp | null
@@ -32,6 +37,7 @@ type Navigation = {
 
 const navigations: Navigation[] = [
   { icon: <HouseIcon />, title: "Home", href: "/home" },
+  { icon: <UsersRound />, title: "Pairing", href: "/pairing" },
   { icon: <Settings2 />, title: "Setting", href: "/setting" },
 ]
 
@@ -109,7 +115,15 @@ export default function BtbSidebar({ firebaseApp }: BtbSidebarProps) {
                 disabled={isSigningOut}
               >
                 <LogOut aria-hidden="true" />
-                <span>{isSigningOut ? "Signing out..." : "Sign out"}</span>
+                <span>
+                  {isSigningOut
+                    ? user.isAnonymous
+                      ? "Deleting guest account..."
+                      : "Signing out..."
+                    : user.isAnonymous
+                      ? "Delete guest account"
+                      : "Sign out"}
+                </span>
               </SidebarMenuButton>
               {signOutError && (
                 <p role="alert" className="px-2 text-xs text-destructive">
