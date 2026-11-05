@@ -1,13 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type SubmitEvent } from "react"
-import type { FirebaseApp } from "firebase/app"
-import type { User } from "firebase/auth"
-import {
-  collection,
-  getFirestore,
-  onSnapshot,
-  query,
-  where,
-} from "firebase/firestore"
+import type { SupabaseClient } from "@supabase/supabase-js"
+import type { User } from "@/lib/auth"
 import {
   Check,
   Copy,
@@ -44,12 +37,12 @@ import {
 } from "@/components/ui/field"
 import { Input } from "@/components/ui/input"
 import {
-  CODE_LENGTH,
+  PAIRING_CODE_LENGTH,
   parsePairing,
   parsePairingInvite,
   cancelPairingCode,
   createPairingCode,
-  getPairingDisplayName,
+  getPairingPartnerUid,
   getPairingStatusMessage,
   isValidPairingCode,
   isPairingExpired,
@@ -59,18 +52,15 @@ import {
   type PairingInvite,
   getExpireTime,
 } from "@/lib/pairings"
+import { APP_ERRORS } from "@/lib/errors"
+import {
+  fetchProfileDisplayNames,
+  getProfileDisplayName,
+} from "@/lib/user-profiles"
 
 type PairingPageProps = {
-  firebaseApp: FirebaseApp
+  supabase: SupabaseClient
   user: User
-}
-
-function getUserDisplayName(user: User) {
-  const name =
-    user.email?.trim() ||
-    user.displayName?.trim() ||
-    "Guest Account"
-  return name.slice(0, 80)
 }
 
 function formatTimeRemaining(milliseconds: number) {
@@ -81,10 +71,14 @@ function formatTimeRemaining(milliseconds: number) {
   return `${minutes}:${seconds.toString().padStart(2, "0")}`
 }
 
-export default function PairingPage({ firebaseApp, user }: PairingPageProps) {
-  const db = useMemo(() => getFirestore(firebaseApp), [firebaseApp])
+export default function PairingPage({ supabase, user }: PairingPageProps) {
   const [ownedPairings, setOwnedPairings] = useState<Pairing[]>([])
   const [joinedPairings, setJoinedPairings] = useState<Pairing[]>([])
+  const [displayNameLookup, setDisplayNameLookup] = useState<{
+    key: string
+    names: Record<string, string>
+    unavailable: boolean
+  }>({ key: "", names: {}, unavailable: false })
   const [ownedInvites, setOwnedInvites] = useState<PairingInvite[]>([])
   const [isLoading, setIsLoading] = useState(true)
   const [isCreating, setIsCreating] = useState(false)
@@ -99,6 +93,53 @@ export default function PairingPage({ firebaseApp, user }: PairingPageProps) {
   const [copiedCode, setCopiedCode] = useState<string | null>(null)
   const [now, setNow] = useState(() => Date.now())
   const deletionAttempts = useRef(new Map<string, number>())
+  const activePairings = useMemo(
+    () =>
+      [...ownedPairings, ...joinedPairings].sort((a, b) =>
+        a.id.localeCompare(b.id)
+      ),
+    [ownedPairings, joinedPairings]
+  )
+  const displayNameLookupKey = `${user.uid}:${activePairings
+    .map((pairing) => pairing.id)
+    .join(",")}`
+  const displayNames =
+    displayNameLookup.key === displayNameLookupKey
+      ? displayNameLookup.names
+      : {}
+  const displayNamesUnavailable =
+    displayNameLookup.key === displayNameLookupKey &&
+    displayNameLookup.unavailable
+
+  useEffect(() => {
+    let cancelled = false
+    const partnerUids = activePairings.map((pairing) =>
+      getPairingPartnerUid(pairing, user.uid)
+    )
+    void fetchProfileDisplayNames(supabase, partnerUids)
+      .then((names) => {
+        if (!cancelled) {
+          setDisplayNameLookup({
+            key: displayNameLookupKey,
+            names,
+            unavailable: false,
+          })
+        }
+      })
+      .catch((lookupError: unknown) => {
+        if (!cancelled) {
+          console.warn("Unable to load paired account names.", lookupError)
+          setDisplayNameLookup({
+            key: displayNameLookupKey,
+            names: {},
+            unavailable: true,
+          })
+        }
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [activePairings, displayNameLookupKey, supabase, user.uid])
 
   useEffect(() => {
     const intervalId = window.setInterval(() => setNow(Date.now()), 1000)
@@ -109,83 +150,98 @@ export default function PairingPage({ firebaseApp, user }: PairingPageProps) {
     let ownerLoaded = false
     let partnerLoaded = false
     let invitesLoaded = false
-    const collectionRef = collection(db, "pairing")
-    const invitesCollectionRef = collection(db, "pairingInvites")
     const finishLoadingIfReady = () => {
       if (ownerLoaded && partnerLoaded && invitesLoaded) setIsLoading(false)
     }
-
-    setIsLoading(true)
-    const ownerUnsubscribe = onSnapshot(
-      query(collectionRef, where("ownerUid", "==", user.uid)),
-      (snapshot) => {
-        try {
-          setOwnedPairings(
-            snapshot.docs.map((pairingDoc) =>
-              parsePairing(pairingDoc.id, pairingDoc.data())
-            )
-          )
-          ownerLoaded = true
-          finishLoadingIfReady()
-        } catch (snapshotError) {
-          setError(getPairingStatusMessage(snapshotError))
+    let active = true
+    const channel = supabase
+      .channel(`pairing:${user.uid}`)
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "pairings",
+          filter: `owner_uid=eq.${user.uid}`,
+        },
+        () => void loadPairings()
+      )
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "pairings",
+          filter: `partner_uid=eq.${user.uid}`,
+        },
+        () => void loadPairings()
+      )
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "pairing_invites",
+          filter: `owner_uid=eq.${user.uid}`,
+        },
+        () => void loadInvites()
+      )
+      .subscribe((status) => {
+        if (status === "CHANNEL_ERROR" || status === "TIMED_OUT") {
+          setError(APP_ERRORS.realtime)
           setIsLoading(false)
         }
-      },
-      (snapshotError) => {
-        setError(getPairingStatusMessage(snapshotError))
+      })
+    async function loadPairings() {
+      const [owned, joined] = await Promise.all([
+        supabase.from("pairings").select("*").eq("owner_uid", user.uid),
+        supabase.from("pairings").select("*").eq("partner_uid", user.uid),
+      ])
+      if (!active) return
+      if (owned.error || joined.error) {
+        setError(getPairingStatusMessage(owned.error ?? joined.error))
+        setIsLoading(false)
+        return
+      }
+      try {
+        setOwnedPairings(owned.data.map((row) => parsePairing(row)))
+        setJoinedPairings(joined.data.map((row) => parsePairing(row)))
+        ownerLoaded = true
+        partnerLoaded = true
+        finishLoadingIfReady()
+      } catch (loadError) {
+        setError(getPairingStatusMessage(loadError))
         setIsLoading(false)
       }
-    )
-    const partnerUnsubscribe = onSnapshot(
-      query(collectionRef, where("partnerUid", "==", user.uid)),
-      (snapshot) => {
-        try {
-          setJoinedPairings(
-            snapshot.docs.map((pairingDoc) =>
-              parsePairing(pairingDoc.id, pairingDoc.data())
-            )
-          )
-          partnerLoaded = true
-          finishLoadingIfReady()
-        } catch (snapshotError) {
-          setError(getPairingStatusMessage(snapshotError))
-          setIsLoading(false)
-        }
-      },
-      (snapshotError) => {
-        setError(getPairingStatusMessage(snapshotError))
+    }
+    async function loadInvites() {
+      const { data, error: inviteError } = await supabase
+        .from("pairing_invites")
+        .select("*")
+        .eq("owner_uid", user.uid)
+      if (!active) return
+      if (inviteError) {
+        setError(getPairingStatusMessage(inviteError))
+        setIsLoading(false)
+        return
+      }
+      try {
+        setOwnedInvites(data.map((row) => parsePairingInvite(row)))
+        invitesLoaded = true
+        finishLoadingIfReady()
+      } catch (loadError) {
+        setError(getPairingStatusMessage(loadError))
         setIsLoading(false)
       }
-    )
-    const invitesUnsubscribe = onSnapshot(
-      query(invitesCollectionRef, where("ownerUid", "==", user.uid)),
-      (snapshot) => {
-        try {
-          setOwnedInvites(
-            snapshot.docs.map((inviteDoc) =>
-              parsePairingInvite(inviteDoc.id, inviteDoc.data())
-            )
-          )
-          invitesLoaded = true
-          finishLoadingIfReady()
-        } catch (snapshotError) {
-          setError(getPairingStatusMessage(snapshotError))
-          setIsLoading(false)
-        }
-      },
-      (snapshotError) => {
-        setError(getPairingStatusMessage(snapshotError))
-        setIsLoading(false)
-      }
-    )
+    }
+    void loadPairings()
+    void loadInvites()
 
     return () => {
-      ownerUnsubscribe()
-      partnerUnsubscribe()
-      invitesUnsubscribe()
+      active = false
+      void supabase.removeChannel(channel)
     }
-  }, [db, user.uid])
+  }, [supabase, user.uid])
 
   useEffect(() => {
     const expiredInvites = ownedInvites.filter(
@@ -196,30 +252,32 @@ export default function PairingPage({ firebaseApp, user }: PairingPageProps) {
 
     for (const invite of expiredInvites) {
       deletionAttempts.current.set(invite.id, now)
-      void cancelPairingCode(db, user.uid, invite.id).catch((deleteError) => {
-        setError(getPairingStatusMessage(deleteError))
-      })
+      void cancelPairingCode(supabase, user.uid, invite.id).catch(
+        (deleteError) => {
+          setError(getPairingStatusMessage(deleteError))
+        }
+      )
     }
-  }, [db, now, ownedInvites, user.uid])
+  }, [supabase, now, ownedInvites, user.uid])
 
   const openPairing = ownedInvites.find(
     (invite) => !isPairingExpired(invite, now)
   )
-  const activePairings = [...ownedPairings, ...joinedPairings].sort((a, b) =>
-    a.id.localeCompare(b.id)
-  )
-
   async function handleCreateCode() {
     setError(null)
     setFeedback(null)
     setIsCreating(true)
 
     try {
-      const code = await createPairingCode(
-        db,
-        user.uid,
-        getUserDisplayName(user)
-      )
+      const code = await createPairingCode(supabase, user.uid)
+      setOwnedInvites((invites) => [
+        parsePairingInvite({
+          code,
+          owner_uid: user.uid,
+          created_at: new Date().toISOString(),
+        }),
+        ...invites.filter((invite) => !isPairingExpired(invite, Date.now())),
+      ])
       setFeedback(
         `Your invite code is ${code}. Share it with one person to pair.`
       )
@@ -236,7 +294,10 @@ export default function PairingPage({ firebaseApp, user }: PairingPageProps) {
     setIsRemoving(true)
 
     try {
-      await cancelPairingCode(db, user.uid, code)
+      await cancelPairingCode(supabase, user.uid, code)
+      setOwnedInvites((invites) =>
+        invites.filter((invite) => invite.id !== code)
+      )
       setFeedback("Invite code removed. It can no longer be used.")
     } catch (removeError) {
       setError(getPairingStatusMessage(removeError))
@@ -251,7 +312,7 @@ export default function PairingPage({ firebaseApp, user }: PairingPageProps) {
     setRemovingPairingId(pairing.id)
 
     try {
-      await removePairing(db, user.uid, pairing.id)
+      await removePairing(supabase, pairing.id)
       setFeedback(
         "Pairing removed. You can pair with this person again using a new code."
       )
@@ -275,7 +336,7 @@ export default function PairingPage({ firebaseApp, user }: PairingPageProps) {
     setFeedback(null)
     setIsJoining(true)
     try {
-      await redeemPairingCode(db, code, user.uid, getUserDisplayName(user))
+      await redeemPairingCode(supabase, code)
       setInviteCode("")
       setFeedback("You're paired! Your new connection is now in your boat.")
     } catch (joinError) {
@@ -298,7 +359,7 @@ export default function PairingPage({ firebaseApp, user }: PairingPageProps) {
   }
 
   return (
-    <main className="mx-auto flex w-full max-w-5xl flex-col gap-8 p-6 md:p-10">
+    <main className="mx-auto flex w-full max-w-3xl flex-col gap-8 p-6 md:p-10">
       <header className="flex flex-col gap-2">
         <h1 className="text-3xl font-semibold tracking-tight sm:text-4xl">
           Pair up with another sailor!
@@ -307,6 +368,11 @@ export default function PairingPage({ firebaseApp, user }: PairingPageProps) {
           And together witnessing the ship burned.
         </p>
       </header>
+      {displayNamesUnavailable && (
+        <p role="status" className="text-sm text-muted-foreground">
+          Account names are unavailable. Showing user IDs instead.
+        </p>
+      )}
 
       <section
         aria-label="Pairing actions"
@@ -417,7 +483,7 @@ export default function PairingPage({ firebaseApp, user }: PairingPageProps) {
                     id="pairing-code"
                     autoComplete="off"
                     autoCapitalize="characters"
-                    maxLength={CODE_LENGTH}
+                    maxLength={PAIRING_CODE_LENGTH}
                     placeholder="e.g. SA1LA80ATN0W"
                     value={inviteCode}
                     onChange={(event) =>
@@ -428,7 +494,8 @@ export default function PairingPage({ firebaseApp, user }: PairingPageProps) {
                       )
                     }
                     aria-invalid={
-                      inviteCode.length > 0 && inviteCode.length !== CODE_LENGTH
+                      inviteCode.length > 0 &&
+                      inviteCode.length !== PAIRING_CODE_LENGTH
                     }
                   />
                   <FieldDescription>
@@ -439,7 +506,9 @@ export default function PairingPage({ firebaseApp, user }: PairingPageProps) {
               <Button
                 type="submit"
                 variant="outline"
-                disabled={isJoining || inviteCode.length !== CODE_LENGTH}
+                disabled={
+                  isJoining || inviteCode.length !== PAIRING_CODE_LENGTH
+                }
               >
                 {isJoining && (
                   <LoaderCircle
@@ -515,8 +584,10 @@ export default function PairingPage({ firebaseApp, user }: PairingPageProps) {
                     >
                       <div className="flex min-w-0 flex-col">
                         <span className="truncate font-medium">
-                          {getPairingDisplayName(pairing, user.uid) ??
-                            "Your pairing"}
+                          {getProfileDisplayName(
+                            getPairingPartnerUid(pairing, user.uid),
+                            displayNames
+                          )}
                         </span>
                         <span className="text-xs text-muted-foreground">
                           From {pairing.createdAt.toDate().toDateString()}
@@ -531,7 +602,7 @@ export default function PairingPage({ firebaseApp, user }: PairingPageProps) {
                                 variant="destructive"
                                 size="sm"
                                 disabled={removingPairingId !== null}
-                                aria-label={`Remove pairing with ${getPairingDisplayName(pairing, user.uid) ?? "this person"}`}
+                                aria-label={`Remove pairing with ${getProfileDisplayName(getPairingPartnerUid(pairing, user.uid), displayNames)}`}
                               >
                                 <Trash2
                                   data-icon="inline-start"
@@ -548,8 +619,10 @@ export default function PairingPage({ firebaseApp, user }: PairingPageProps) {
                               </AlertDialogTitle>
                               <AlertDialogDescription>
                                 This will remove your connection with{" "}
-                                {getPairingDisplayName(pairing, user.uid) ??
-                                  "this person"}{" "}
+                                {getProfileDisplayName(
+                                  getPairingPartnerUid(pairing, user.uid),
+                                  displayNames
+                                )}{" "}
                                 for both accounts. You can pair again with a new
                                 invite code.
                               </AlertDialogDescription>

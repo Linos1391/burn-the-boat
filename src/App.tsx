@@ -1,6 +1,11 @@
 import { useEffect, useState } from "react"
-import { Navigate, Route, Routes, BrowserRouter } from "react-router-dom"
-import { getAuth, onAuthStateChanged, type User } from "firebase/auth"
+import {
+  Navigate,
+  Route,
+  Routes,
+  BrowserRouter,
+  useLocation,
+} from "react-router-dom"
 
 import {
   SidebarInset,
@@ -11,44 +16,40 @@ import { Skeleton } from "./components/ui/skeleton"
 import BtbSidebar from "./app/sidebar"
 import HomePage from "./app/home"
 import PairingPage from "./app/pairing"
+import PlannerPage from "./app/planner"
 import SettingPage from "./app/setting"
 import LoginPage from "./app/login"
 import VerifyEmailPage from "./app/verify-email"
-import { firebaseApp } from "./lib/firebase"
+import { supabase } from "./lib/supabase"
+import { mapAuthUser, type User } from "./lib/auth"
 
 type AuthStatus = "loading" | "authenticated" | "unauthenticated" | "error"
 
 function requiresEmailVerification(user: User) {
-  return (
-    user.providerData.some((provider) => provider.providerId === "password") &&
-    !user.emailVerified
-  )
+  return !user.isAnonymous && user.providerId === "email" && !user.emailVerified
 }
 
 function AppLayout() {
-  const auth = firebaseApp ? getAuth(firebaseApp) : null
-  const [authStatus, setAuthStatus] = useState<AuthStatus>("loading")
+  const location = useLocation()
+  const [authStatus, setAuthStatus] = useState<AuthStatus>(
+    supabase ? "loading" : "unauthenticated"
+  )
   const [user, setUser] = useState<User | null>(null)
 
   useEffect(() => {
-    if (!auth) {
-      setUser(null)
-      setAuthStatus("unauthenticated")
+    if (!supabase) {
       return
     }
 
-    return onAuthStateChanged(
-      auth,
-      (currentUser) => {
-        setUser(currentUser)
-        setAuthStatus(currentUser ? "authenticated" : "unauthenticated")
-      },
-      (error) => {
-        console.error("Failed to determine the current Firebase user.", error)
-        setAuthStatus("error")
-      }
-    )
-  }, [auth])
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((_event, session) => {
+      const currentUser = mapAuthUser(session?.user ?? null)
+      setUser(currentUser)
+      setAuthStatus(currentUser ? "authenticated" : "unauthenticated")
+    })
+    return () => subscription.unsubscribe()
+  }, [])
 
   if (authStatus === "loading") {
     return (
@@ -86,32 +87,41 @@ function AppLayout() {
   }
 
   return (
-    <SidebarProvider>
-      <BtbSidebar firebaseApp={firebaseApp} />
-      <SidebarInset>
+    <SidebarProvider className="h-svh min-h-0 overflow-hidden">
+      <BtbSidebar supabase={supabase} />
+      <SidebarInset className="min-h-0 overflow-y-auto">
         <SidebarTrigger />
+        {user && supabase && (
+          <div hidden={location.pathname !== "/planner"}>
+            <PlannerPage key={user.uid} supabase={supabase} user={user} />
+          </div>
+        )}
         <Routes>
           <Route
             path="/home"
-            element={
-              <HomePage
-                key={user?.uid ?? null}
-                firebaseApp={firebaseApp}
-                user={user}
-              />
-            }
+            element={<HomePage supabase={supabase} user={user} />}
           />
           <Route
             path="/pairing"
             element={
-              user && firebaseApp ? (
-                <PairingPage firebaseApp={firebaseApp} user={user} />
+              user && supabase ? (
+                <PairingPage supabase={supabase} user={user} />
               ) : (
                 <Navigate to="/login" replace />
               )
             }
           />
-          <Route path="/setting" element={<SettingPage />} />
+          <Route path="/planner" element={null} />
+          <Route
+            path="/setting"
+            element={
+              user && supabase ? (
+                <SettingPage supabase={supabase} user={user} />
+              ) : (
+                <Navigate to="/login" replace />
+              )
+            }
+          />
           <Route path="*" element={<Navigate to="/login" replace />} />
         </Routes>
       </SidebarInset>
@@ -123,13 +133,10 @@ export default function App() {
   return (
     <BrowserRouter>
       <Routes>
-        <Route
-          path="/login"
-          element={<LoginPage firebaseApp={firebaseApp} />}
-        />
+        <Route path="/login" element={<LoginPage supabase={supabase} />} />
         <Route
           path="/verify-email"
-          element={<VerifyEmailPage firebaseApp={firebaseApp} />}
+          element={<VerifyEmailPage supabase={supabase} />}
         />
         <Route path="/" element={<Navigate to="/login" replace />} />
         <Route path="/*" element={<AppLayout />} />

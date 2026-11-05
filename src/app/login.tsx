@@ -1,19 +1,9 @@
 import { useEffect, useState, type SubmitEvent } from "react"
 import { Link, useNavigate } from "react-router-dom"
-import {
-  createUserWithEmailAndPassword,
-  GoogleAuthProvider,
-  getAuth,
-  onAuthStateChanged,
-  sendPasswordResetEmail,
-  sendEmailVerification,
-  signInAnonymously,
-  signInWithEmailAndPassword,
-  signInWithPopup,
-  type Auth,
-} from "firebase/auth"
-import type { FirebaseApp } from "firebase/app"
-import { ArrowRight, Flame, UserRound } from "lucide-react"
+import type { SupabaseClient } from "@supabase/supabase-js"
+import { mapAuthUser, meetsPasswordRequirements } from "@/lib/auth"
+import { getErrorMessage } from "@/lib/errors"
+import { ArrowRight, UserRound } from "lucide-react"
 import {
   Card,
   CardContent,
@@ -37,9 +27,10 @@ import {
   AlertDialogTitle,
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog"
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 
 type LoginPageProps = {
-  firebaseApp: FirebaseApp | null
+  supabase: SupabaseClient | null
 }
 
 type Feedback = {
@@ -47,56 +38,13 @@ type Feedback = {
   message: string
 }
 
-function meetsPasswordRequirements(password: string) {
-  return (
-    /[A-Z]/.test(password) &&
-    /[a-z]/.test(password) &&
-    /\d/.test(password) &&
-    /[^A-Za-z0-9]/.test(password)
-  )
-}
-
-function getAuthErrorMessage(error: unknown) {
-  if (
-    typeof error === "object" &&
-    error !== null &&
-    "code" in error &&
-    "message" in error &&
-    typeof error.code === "string" &&
-    typeof error.message === "string"
-  ) {
-    switch (error.code) {
-      case "auth/email-already-in-use":
-        return "An account already exists for this email. Try signing in instead."
-      case "auth/invalid-email":
-        return "Enter a valid email address."
-      case "auth/invalid-credential":
-      case "auth/user-not-found":
-      case "auth/wrong-password":
-        return "That email and password combination wasn't recognized."
-      case "auth/weak-password":
-        return "Choose a stronger password."
-      case "auth/too-many-requests":
-        return "Too many attempts. Please wait a little and try again."
-      case "auth/network-request-failed":
-        return "Couldn't connect to Firebase. Check your connection and try again."
-      case "auth/operation-not-allowed":
-        return "This sign-in method isn't enabled for this Firebase project."
-      case "auth/unauthorized-domain":
-        return "This domain isn't authorized for sign-in. Add it in Firebase Authentication settings."
-      default:
-        return error.message
-    }
-  }
-
-  return error instanceof Error
-    ? error.message
-    : "Something went wrong. Please try again."
-}
-
-export default function LoginPage({ firebaseApp }: LoginPageProps) {
+export default function LoginPage({ supabase }: LoginPageProps) {
   const navigate = useNavigate()
-  const [mode, setMode] = useState<"login" | "signup">("login")
+  const [mode, setMode] = useState<"login" | "signup" | "recovery">(() =>
+    new URLSearchParams(window.location.search).get("type") === "recovery"
+      ? "recovery"
+      : "login"
+  )
   const [email, setEmail] = useState("")
   const [password, setPassword] = useState("")
   const [confirmPassword, setConfirmPassword] = useState("")
@@ -106,25 +54,29 @@ export default function LoginPage({ firebaseApp }: LoginPageProps) {
     "google" | "anonymous" | null
   >(null)
 
-  const auth: Auth | null = firebaseApp ? getAuth(firebaseApp) : null
-
   useEffect(() => {
-    if (!auth) return
-
-    return onAuthStateChanged(auth, (user) => {
-      if (user) {
-        const needsVerification =
-          user.providerData.some(
-            (provider) => provider.providerId === "password"
-          ) && !user.emailVerified
-        navigate(needsVerification ? "/verify-email" : "/home", {
-          replace: true,
-        })
+    if (!supabase || mode === "recovery") return
+    let active = true
+    void supabase.auth.getSession().then(({ data, error }) => {
+      if (error) {
+        setFeedback({ kind: "error", message: getErrorMessage(error) })
+        return
       }
+      if (!active || !data.session) return
+      const user = mapAuthUser(data.session.user)
+      navigate(
+        user && user.providerId === "email" && !user.emailVerified
+          ? "/verify-email"
+          : "/home",
+        { replace: true }
+      )
     })
-  }, [auth, navigate])
+    return () => {
+      active = false
+    }
+  }, [supabase, navigate, mode])
 
-  function changeMode(nextMode: "login" | "signup") {
+  function changeMode(nextMode: "login" | "signup" | "recovery") {
     setMode(nextMode)
     setFeedback(null)
     setPassword("")
@@ -135,12 +87,12 @@ export default function LoginPage({ firebaseApp }: LoginPageProps) {
     event.preventDefault()
     setFeedback(null)
 
-    if (!auth) return
-    if (mode === "signup" && password !== confirmPassword) {
+    if (!supabase) return
+    if (mode !== "login" && password !== confirmPassword) {
       setFeedback({ kind: "error", message: "Your passwords don't match." })
       return
     }
-    if (mode === "signup" && !meetsPasswordRequirements(password)) {
+    if (mode !== "login" && !meetsPasswordRequirements(password)) {
       setFeedback({
         kind: "error",
         message:
@@ -151,30 +103,57 @@ export default function LoginPage({ firebaseApp }: LoginPageProps) {
 
     setIsSubmitting(true)
     try {
-      if (mode === "signup") {
-        const credential = await createUserWithEmailAndPassword(
-          auth,
-          email.trim(),
-          password
-        )
-        await sendEmailVerification(credential.user)
-        navigate("/verify-email", { replace: true })
-      } else {
-        const credential = await signInWithEmailAndPassword(
-          auth,
-          email.trim(),
-          password
-        )
-        const needsVerification =
-          credential.user.providerData.some(
-            (provider) => provider.providerId === "password"
-          ) && !credential.user.emailVerified
-        navigate(needsVerification ? "/verify-email" : "/home", {
-          replace: true,
+      if (mode === "recovery") {
+        const { error } = await supabase.auth.updateUser({ password })
+        if (error) throw error
+        setMode("login")
+        setPassword("")
+        setConfirmPassword("")
+        setFeedback({ kind: "success", message: "Your password was updated." })
+        navigate("/home", { replace: true })
+      } else if (mode === "signup") {
+        const { data, error } = await supabase.auth.signUp({
+          email: email.trim(),
+          password,
+          options: {
+            emailRedirectTo: `${window.location.origin}/verify-email`,
+            data: {
+              display_name: email.trim(),
+            },
+          },
         })
+        if (error) throw error
+        // An already-registered email comes back with no identities.
+        if (data.user && data.user.identities?.length === 0) {
+          setFeedback({
+            kind: "error",
+            message: "This email is already registered. Sign in instead.",
+          })
+          return
+        }
+        navigate("/verify-email", {
+          replace: true,
+          state: { email: email.trim() },
+        })
+      } else {
+        const { data, error } = await supabase.auth.signInWithPassword({
+          email: email.trim(),
+          password,
+        })
+        if (error) throw error
+        const user = mapAuthUser(data.user)
+        navigate(
+          user &&
+            !user.isAnonymous &&
+            user.providerId === "email" &&
+            !user.emailVerified
+            ? "/verify-email"
+            : "/home",
+          { replace: true }
+        )
       }
     } catch (error) {
-      setFeedback({ kind: "error", message: getAuthErrorMessage(error) })
+      setFeedback({ kind: "error", message: getErrorMessage(error) })
     } finally {
       setIsSubmitting(false)
     }
@@ -182,7 +161,7 @@ export default function LoginPage({ firebaseApp }: LoginPageProps) {
 
   async function handlePasswordReset() {
     setFeedback(null)
-    if (!auth) return
+    if (!supabase) return
     if (!email.trim()) {
       setFeedback({
         kind: "error",
@@ -193,14 +172,18 @@ export default function LoginPage({ firebaseApp }: LoginPageProps) {
 
     setIsSubmitting(true)
     try {
-      await sendPasswordResetEmail(auth, email.trim())
+      const { error } = await supabase.auth.resetPasswordForEmail(
+        email.trim(),
+        { redirectTo: `${window.location.origin}/login?type=recovery` }
+      )
+      if (error) throw error
       setFeedback({
         kind: "success",
         message:
           "If an account exists for that email, a reset link is on its way.",
       })
     } catch (error) {
-      setFeedback({ kind: "error", message: getAuthErrorMessage(error) })
+      setFeedback({ kind: "error", message: getErrorMessage(error) })
     } finally {
       setIsSubmitting(false)
     }
@@ -208,18 +191,23 @@ export default function LoginPage({ firebaseApp }: LoginPageProps) {
 
   async function handleProviderSignIn(provider: "google" | "anonymous") {
     setFeedback(null)
-    if (!auth) return
+    if (!supabase) return
 
     setProviderAction(provider)
     try {
       if (provider === "google") {
-        await signInWithPopup(auth, new GoogleAuthProvider())
+        const { error } = await supabase.auth.signInWithOAuth({
+          provider: "google",
+          options: { redirectTo: `${window.location.origin}/home` },
+        })
+        if (error) throw error
       } else {
-        await signInAnonymously(auth)
+        const { error } = await supabase.auth.signInAnonymously()
+        if (error) throw error
       }
-      navigate("/home", { replace: true })
+      if (provider === "anonymous") navigate("/home", { replace: true })
     } catch (error) {
-      setFeedback({ kind: "error", message: getAuthErrorMessage(error) })
+      setFeedback({ kind: "error", message: getErrorMessage(error) })
     } finally {
       setProviderAction(null)
     }
@@ -232,24 +220,37 @@ export default function LoginPage({ firebaseApp }: LoginPageProps) {
       <Card className="relative w-full max-w-md gap-0 overflow-hidden rounded-2xl border-0 bg-card py-0 shadow-xl ring-1 shadow-foreground/5 ring-foreground/10">
         <CardHeader className="gap-6 px-6 pt-7 pb-6 sm:px-8 sm:pt-8">
           <Link
-            to="https://"
-            className="flex w-fit items-center gap-3 rounded-lg outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+            to="/"
+            className="flex w-fit items-center gap-3 rounded-2xl transition-opacity outline-none hover:opacity-80 focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
           >
-            <span className="flex size-10 items-center justify-center rounded-xl bg-primary text-primary-foreground shadow-sm">
-              <Flame aria-hidden="true" className="size-5" />
-            </span>
-            <span className="text-sm font-semibold tracking-tight">
+            <Avatar className="size-12 rounded-2xl border border-border/70 bg-background p-2 shadow-sm ring-1 ring-border/30 after:rounded-2xl">
+              <AvatarImage
+                src="/icon.svg"
+                className="rounded-xl object-contain"
+              />
+              <AvatarFallback className="rounded-xl text-xs font-semibold">
+                BTB
+              </AvatarFallback>
+            </Avatar>
+
+            <span className="text-xl font-bold tracking-tight">
               Burn the Boat
             </span>
           </Link>
           <div className="flex flex-col gap-2">
             <CardTitle className="text-3xl font-semibold tracking-tight">
-              {mode === "login" ? "Welcome back" : "Start your journey"}
+              {mode === "login"
+                ? "Welcome back"
+                : mode === "signup"
+                  ? "Start your journey"
+                  : "Choose a new password"}
             </CardTitle>
             <CardDescription className="text-sm leading-relaxed">
               {mode === "login"
                 ? "Sign in to pick up where you left off."
-                : "Create an account and make your next move."}
+                : mode === "signup"
+                  ? "Create an account and make your next move."
+                  : "Set a new password for your account."}
             </CardDescription>
           </div>
         </CardHeader>
@@ -257,20 +258,22 @@ export default function LoginPage({ firebaseApp }: LoginPageProps) {
         <CardContent className="px-6 pb-6 sm:px-8">
           <form onSubmit={handleSubmit} className="flex flex-col gap-5">
             <FieldGroup className="gap-4">
-              <Field>
-                <FieldLabel htmlFor="email">Email address</FieldLabel>
-                <Input
-                  autoComplete="email"
-                  id="email"
-                  name="email"
-                  type="email"
-                  placeholder="you@example.com"
-                  className="h-11 rounded-xl bg-background"
-                  value={email}
-                  onChange={(event) => setEmail(event.target.value)}
-                  required
-                />
-              </Field>
+              {mode !== "recovery" && (
+                <Field>
+                  <FieldLabel htmlFor="email">Email address</FieldLabel>
+                  <Input
+                    autoComplete="email"
+                    id="email"
+                    name="email"
+                    type="email"
+                    placeholder="you@example.com"
+                    className="h-11 rounded-xl bg-background"
+                    value={email}
+                    onChange={(event) => setEmail(event.target.value)}
+                    required
+                  />
+                </Field>
+              )}
 
               <Field>
                 <div className="flex items-center justify-between gap-4">
@@ -281,7 +284,7 @@ export default function LoginPage({ firebaseApp }: LoginPageProps) {
                       variant="link"
                       className="h-auto p-0 text-xs"
                       onClick={handlePasswordReset}
-                      disabled={isBusy || !auth}
+                      disabled={isBusy || !supabase}
                     >
                       Forgot password?
                     </Button>
@@ -294,14 +297,14 @@ export default function LoginPage({ firebaseApp }: LoginPageProps) {
                   id="password"
                   name="password"
                   type="password"
-                  placeholder={"Enter your password"}
+                  placeholder={"Enter a minimum 6 digits password"}
                   className="h-11 rounded-xl bg-background"
                   value={password}
                   onChange={(event) => setPassword(event.target.value)}
                   minLength={6}
                   required
                 />
-                {mode === "signup" && (
+                {mode !== "login" && (
                   <ul className="mt-2 grid grid-cols-2 gap-x-2 gap-y-1 text-xs text-muted-foreground">
                     <li>An uppercase letter</li>
                     <li>A lowercase letter</li>
@@ -311,7 +314,7 @@ export default function LoginPage({ firebaseApp }: LoginPageProps) {
                 )}
               </Field>
 
-              {mode === "signup" && (
+              {mode !== "login" && (
                 <Field>
                   <FieldLabel htmlFor="confirm-password">
                     Confirm password
@@ -349,13 +352,15 @@ export default function LoginPage({ firebaseApp }: LoginPageProps) {
             <Button
               className="h-11 w-full rounded-xl"
               type="submit"
-              disabled={isBusy || !auth}
+              disabled={isBusy || !supabase}
             >
               {isSubmitting
                 ? "Please wait..."
                 : mode === "login"
                   ? "Sign in"
-                  : "Create account"}
+                  : mode === "signup"
+                    ? "Create account"
+                    : "Update password"}
               {!isSubmitting && (
                 <ArrowRight data-icon="inline-end" aria-hidden="true" />
               )}
@@ -376,7 +381,7 @@ export default function LoginPage({ firebaseApp }: LoginPageProps) {
               variant="outline"
               className="h-11 w-full rounded-xl"
               onClick={() => handleProviderSignIn("google")}
-              disabled={isBusy || !auth}
+              disabled={isBusy || !supabase}
             >
               <svg
                 aria-hidden="true"
@@ -413,7 +418,7 @@ export default function LoginPage({ firebaseApp }: LoginPageProps) {
                     type="button"
                     variant="outline"
                     className="h-11 w-full rounded-xl"
-                    disabled={isBusy || !auth}
+                    disabled={isBusy || !supabase}
                   >
                     <UserRound aria-hidden="true" data-icon="inline-start" />
                     {providerAction === "anonymous"
@@ -447,23 +452,22 @@ export default function LoginPage({ firebaseApp }: LoginPageProps) {
             </AlertDialog>
           </div>
 
-          {!auth && (
+          {!supabase && (
             <p
               className="mt-5 rounded-lg border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive"
               role="alert"
             >
-              For developer: Firebase isn&apos;t configured yet. Add{" "}
-              VITE_FIREBASE_API_KEY, VITE_FIREBASE_AUTH_DOMAIN, and{" "}
-              VITE_FIREBASE_PROJECT_ID to your environment.
+              Please contact the IT Support immediately: Supabase isn&apos;t
+              configured yet.
             </p>
           )}
         </CardContent>
 
         <CardFooter className="justify-center border-t px-6 py-5 sm:px-8">
           <p className="text-center text-sm text-muted-foreground">
-            {mode === "login"
-              ? "New to Burn the Boat?"
-              : "Already have an account?"}{" "}
+            {mode === "signup"
+              ? "Already have an account?"
+              : "New to Burn the Boat?"}{" "}
             <Button
               type="button"
               variant="link"

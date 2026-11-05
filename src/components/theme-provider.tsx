@@ -111,6 +111,7 @@ export function ThemeProvider({
 
       root.classList.remove("light", "dark")
       root.classList.add(resolvedTheme)
+      root.dataset.agThemeMode = resolvedTheme
 
       if (restoreTransitions) {
         restoreTransitions()

@@ -1,15 +1,8 @@
 import { useEffect, useState } from "react"
-import { Navigate, useNavigate } from "react-router-dom"
-import {
-  getAuth,
-  onAuthStateChanged,
-  reload,
-  sendEmailVerification,
-  signOut,
-  type Auth,
-  type User,
-} from "firebase/auth"
-import type { FirebaseApp } from "firebase/app"
+import { Navigate, useLocation, useNavigate } from "react-router-dom"
+import type { SupabaseClient } from "@supabase/supabase-js"
+import { mapAuthUser, type User } from "@/lib/auth"
+import { getErrorMessage } from "@/lib/errors"
 import { MailCheck } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import {
@@ -22,7 +15,7 @@ import {
 import { Skeleton } from "@/components/ui/skeleton"
 
 type VerifyEmailPageProps = {
-  firebaseApp: FirebaseApp | null
+  supabase: SupabaseClient | null
 }
 
 type Feedback = {
@@ -30,77 +23,65 @@ type Feedback = {
   message: string
 }
 
-function getErrorMessage(error: unknown) {
-  if (
-    typeof error === "object" &&
-    error !== null &&
-    "code" in error &&
-    typeof error.code === "string"
-  ) {
-    if (error.code === "auth/too-many-requests") {
-      return "Too many requests. Please wait a little before trying again."
-    }
-    if (error.code === "auth/network-request-failed") {
-      return "Couldn't connect to Firebase. Check your connection and try again."
-    }
-  }
-
-  return error instanceof Error
-    ? error.message
-    : "Something went wrong. Please try again."
-}
-
-export default function VerifyEmailPage({ firebaseApp }: VerifyEmailPageProps) {
+export default function VerifyEmailPage({ supabase }: VerifyEmailPageProps) {
   const navigate = useNavigate()
-  const auth: Auth | null = firebaseApp ? getAuth(firebaseApp) : null
+  const location = useLocation()
+  const signupEmail =
+    typeof location.state === "object" &&
+    location.state !== null &&
+    "email" in location.state &&
+    typeof location.state.email === "string"
+      ? location.state.email
+      : ""
   const [user, setUser] = useState<User | null>(null)
-  const [isLoading, setIsLoading] = useState(true)
+  const [isLoading, setIsLoading] = useState(Boolean(supabase))
   const [isBusy, setIsBusy] = useState(false)
   const [feedback, setFeedback] = useState<Feedback | null>(null)
 
   useEffect(() => {
-    if (!auth) {
-      setIsLoading(false)
+    if (!supabase) {
       return
     }
-
-    return onAuthStateChanged(
-      auth,
-      (currentUser) => {
-        setUser(currentUser)
-        setIsLoading(false)
-
-        if (!currentUser) {
-          navigate("/login", { replace: true })
-          return
-        }
-
-        const isEmailPasswordUser = currentUser.providerData.some(
-          (provider) => provider.providerId === "password"
-        )
-        if (!isEmailPasswordUser || currentUser.emailVerified) {
-          navigate("/home", { replace: true })
-        }
-      },
-      (error) => {
-        console.error("Failed to determine the current Firebase user.", error)
-        setFeedback({
-          kind: "error",
-          message:
-            "We couldn't check your sign-in status. Refresh and try again.",
-        })
-        setIsLoading(false)
+    let active = true
+    void supabase.auth.getSession().then(({ data, error }) => {
+      if (!active) return
+      if (error) setFeedback({ kind: "error", message: getErrorMessage(error) })
+      const currentUser = mapAuthUser(data.session?.user ?? null)
+      setUser(currentUser)
+      setIsLoading(false)
+      if (
+        currentUser &&
+        (currentUser.providerId !== "email" || currentUser.emailVerified)
+      ) {
+        navigate("/home", { replace: true })
+      }
+    })
+    // Continue automatically when the link is opened (same or another tab).
+    const { data: listener } = supabase.auth.onAuthStateChange(
+      (_event, session) => {
+        const nextUser = mapAuthUser(session?.user ?? null)
+        if (nextUser?.emailVerified) navigate("/home", { replace: true })
       }
     )
-  }, [auth, navigate])
+    return () => {
+      active = false
+      listener.subscription.unsubscribe()
+    }
+  }, [supabase, navigate])
 
   async function handleResend() {
     setFeedback(null)
-    if (!user) return
+    const email = user?.email ?? signupEmail
+    if (!email || !supabase) return
 
     setIsBusy(true)
     try {
-      await sendEmailVerification(user)
+      const { error } = await supabase.auth.resend({
+        type: "signup",
+        email,
+        options: { emailRedirectTo: `${window.location.origin}/verify-email` },
+      })
+      if (error) throw error
       setFeedback({
         kind: "success",
         message: "Verification email sent. Check your inbox and spam folder.",
@@ -114,14 +95,27 @@ export default function VerifyEmailPage({ firebaseApp }: VerifyEmailPageProps) {
 
   async function handleCheckVerification() {
     setFeedback(null)
-    const currentUser = auth?.currentUser
-    if (!currentUser) return
+    if (!supabase) return
 
     setIsBusy(true)
     try {
-      await reload(currentUser)
-      if (currentUser.emailVerified) {
+      const { data: sessionData, error: sessionError } =
+        await supabase.auth.getSession()
+      if (sessionError) throw sessionError
+      // The cached session can be stale; refresh to pick up email_confirmed_at.
+      const refreshed = sessionData.session
+        ? await supabase.auth.refreshSession()
+        : null
+      if (refreshed?.error) throw refreshed.error
+      const currentUser = mapAuthUser(
+        refreshed?.data.session?.user ?? sessionData.session?.user ?? null
+      )
+      setUser(currentUser)
+      if (currentUser?.emailVerified) {
         navigate("/home", { replace: true })
+      } else if (!currentUser) {
+        // Verified in another browser: there is no session here, so sign in.
+        navigate("/login", { replace: true })
       } else {
         setFeedback({
           kind: "error",
@@ -137,11 +131,12 @@ export default function VerifyEmailPage({ firebaseApp }: VerifyEmailPageProps) {
   }
 
   async function handleUseAnotherAccount() {
-    if (!auth) return
+    if (!supabase) return
 
     setIsBusy(true)
     try {
-      await signOut(auth)
+      const { error } = await supabase.auth.signOut()
+      if (error) throw error
       navigate("/login", { replace: true })
     } catch (error) {
       setFeedback({ kind: "error", message: getErrorMessage(error) })
@@ -161,7 +156,7 @@ export default function VerifyEmailPage({ firebaseApp }: VerifyEmailPageProps) {
     )
   }
 
-  if (!auth || !user || !user.email) {
+  if (!supabase || (!user && !signupEmail)) {
     return <Navigate to="/login" replace />
   }
 
@@ -180,7 +175,7 @@ export default function VerifyEmailPage({ firebaseApp }: VerifyEmailPageProps) {
               To continue, verify this email address:{" "}
               {
                 <span className="font-medium text-foreground">
-                  {user?.email}
+                  {user?.email ?? signupEmail}
                 </span>
               }
               . Open the link from your inbox, then come back here. If you
@@ -205,7 +200,7 @@ export default function VerifyEmailPage({ firebaseApp }: VerifyEmailPageProps) {
           <Button
             className="h-11 w-full rounded-xl"
             onClick={handleCheckVerification}
-            disabled={isBusy || !user}
+            disabled={isBusy || (!user && !signupEmail)}
           >
             {isBusy ? "Please wait..." : "I've verified my email"}
           </Button>
@@ -213,7 +208,7 @@ export default function VerifyEmailPage({ firebaseApp }: VerifyEmailPageProps) {
             variant="outline"
             className="h-11 w-full rounded-xl"
             onClick={handleResend}
-            disabled={isBusy || !user}
+            disabled={isBusy || (!user && !signupEmail)}
           >
             Resend verification email
           </Button>
@@ -221,7 +216,7 @@ export default function VerifyEmailPage({ firebaseApp }: VerifyEmailPageProps) {
             variant="link"
             className="h-auto self-center"
             onClick={handleUseAnotherAccount}
-            disabled={isBusy || !auth}
+            disabled={isBusy || !supabase}
           >
             Use another account
           </Button>
