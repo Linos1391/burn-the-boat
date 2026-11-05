@@ -463,7 +463,20 @@ export default function LoginPage({ supabase }: LoginPageProps) {
           )}
         </CardContent>
 
-        <CardFooter className="justify-center border-t px-6 py-5 sm:px-8">
+        <CardFooter className="flex-col justify-center gap-3 border-t px-6 py-5 sm:px-8">
+          <p className="text-center text-xs text-muted-foreground">
+            By continuing, you agree that we store your email address to run
+            your account. See our{" "}
+            <a
+              href="https://github.com/Linos1391/burn-the-boat/blob/main/PRIVACY.md"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="underline"
+            >
+              Privacy Notice
+            </a>
+            .
+          </p>
           <p className="text-center text-sm text-muted-foreground">
             {mode === "signup"
               ? "Already have an account?"
