@@ -1,4 +1,4 @@
-# [Paypal AI Hackathon] Burn The Boat
+# [Paypal AI Hackathon 2026] Burn The Boat
 
 React, TypeScript, Vite, and shadcn/ui app backed by Supabase (Auth, Postgres,
 Realtime, Edge Functions) with PayPal-backed boat bets. Every charge, payout and
