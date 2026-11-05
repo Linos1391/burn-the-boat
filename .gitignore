@@ -22,3 +22,8 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+.env
+
+# Vibe coding (Not really but yeah whatever)
+.agents
+skills-lock.json
