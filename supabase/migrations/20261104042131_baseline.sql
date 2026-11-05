@@ -267,7 +267,7 @@ CREATE OR REPLACE FUNCTION "public"."decide_boat_request"("p_request_id" "text",
 declare
   current_request public.boat_requests;
   updated public.boat_requests;
-  requester_plan jsonb;
+  v_requester_plan jsonb;
   requester_plan_id uuid;
   partner_plan_id uuid;
   requester_saved_plan public.planner_plans;
@@ -311,9 +311,9 @@ begin
     raise exception 'The partner has not submitted a plan';
   end if;
 
-  requester_plan := coalesce(p_requester_plan, current_request.requester_plan);
-  if coalesce(jsonb_typeof(requester_plan -> 'tasks'), '') <> 'array'
-    or jsonb_array_length(requester_plan -> 'tasks') < 1 then
+  v_requester_plan := coalesce(p_requester_plan, current_request.requester_plan);
+  if coalesce(jsonb_typeof(v_requester_plan -> 'tasks'), '') <> 'array'
+    or jsonb_array_length(v_requester_plan -> 'tasks') < 1 then
     raise exception 'A plan needs at least one step to be on a boat';
   end if;
   if coalesce(jsonb_typeof(current_request.partner_plan -> 'tasks'), '') <> 'array'
@@ -321,7 +321,7 @@ begin
     raise exception 'A plan needs at least one step to be on a boat';
   end if;
 
-  requester_plan_id := (requester_plan ->> 'id')::uuid;
+  requester_plan_id := (v_requester_plan ->> 'id')::uuid;
   partner_plan_id := (current_request.partner_plan ->> 'id')::uuid;
 
   select * into requester_saved_plan
@@ -344,12 +344,12 @@ begin
   from public.planner_tasks task
   where task.plan_id = requester_plan_id;
   if requester_saved_tasks is null
-    or requester_saved_tasks is distinct from (requester_plan -> 'tasks')
-    or requester_saved_plan.title is distinct from (requester_plan ->> 'title')
-    or requester_saved_plan.description is distinct from (requester_plan ->> 'description')
+    or requester_saved_tasks is distinct from (v_requester_plan -> 'tasks')
+    or requester_saved_plan.title is distinct from (v_requester_plan ->> 'title')
+    or requester_saved_plan.description is distinct from (v_requester_plan ->> 'description')
     or requester_saved_plan.total_estimated_minutes is distinct from
-      ((requester_plan ->> 'totalEstimatedMinutes')::integer)
-    or requester_saved_plan.mode is distinct from (requester_plan ->> 'mode') then
+      ((v_requester_plan ->> 'totalEstimatedMinutes')::integer)
+    or requester_saved_plan.mode is distinct from (v_requester_plan ->> 'mode') then
     raise exception 'Your plan changed after AI review. Review it again before accepting.';
   end if;
 
@@ -395,7 +395,7 @@ begin
   where id = partner_plan_id and owner_uid = current_request.partner_uid;
 
   update public.boat_requests set
-    requester_plan = jsonb_set(requester_plan, '{mode}', '"inferno"', true),
+    requester_plan = jsonb_set(v_requester_plan, '{mode}', '"inferno"', true),
     partner_plan = jsonb_set(
       current_request.partner_plan,
       '{mode}',
