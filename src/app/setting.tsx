@@ -1,4 +1,4 @@
-import { useEffect, useState, type SubmitEvent } from "react"
+import { lazy, Suspense, useEffect, useState, type SubmitEvent } from "react"
 import type { SupabaseClient } from "@supabase/supabase-js"
 import { useNavigate } from "react-router-dom"
 import { meetsPasswordRequirements, type User } from "@/lib/auth"
@@ -59,6 +59,8 @@ import {
   getProfileAvatarUrl,
   profileUpdatedEvent,
 } from "@/lib/user-profiles"
+
+const TransactionsCard = lazy(() => import("@/app/transactions"))
 
 const acceptedAvatarTypes = {
   "image/jpeg": "jpg",
@@ -680,6 +682,12 @@ export default function SettingPage({ supabase, user }: SettingPageProps) {
       </Card>
 
       <PayoutEmailCard supabase={supabase} userId={user.uid} />
+
+      {supabase && (
+        <Suspense fallback={null}>
+          <TransactionsCard supabase={supabase} />
+        </Suspense>
+      )}
 
       <Dialog
         open={accountDialog === "create-account"}

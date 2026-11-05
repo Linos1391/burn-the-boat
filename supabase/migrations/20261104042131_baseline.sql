@@ -1048,6 +1048,48 @@ CREATE TABLE IF NOT EXISTS "public"."user_payout_emails" (
     CONSTRAINT "user_payout_emails_email_check" CHECK (("length"("email") <= 254))
 );
 
+-- Append-only money history, written only by the trigger below.
+CREATE TABLE IF NOT EXISTS "public"."stake_events" (
+    "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
+    "stake_id" "uuid" NOT NULL,
+    "user_uid" "uuid" NOT NULL,
+    "request_id" "text" NOT NULL,
+    "amount_cents" integer NOT NULL,
+    "event" "text" NOT NULL,
+    "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    CONSTRAINT "stake_events_pkey" PRIMARY KEY ("id"),
+    CONSTRAINT "stake_events_user_uid_fkey" FOREIGN KEY ("user_uid") REFERENCES "auth"."users"("id") ON DELETE CASCADE
+);
+
+CREATE INDEX "stake_events_user_idx" ON "public"."stake_events" USING "btree" ("user_uid", "created_at" DESC);
+
+ALTER TABLE "public"."stake_events" ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "Users read their own stake events" ON "public"."stake_events" FOR SELECT TO "authenticated" USING (("user_uid" = ( SELECT "auth"."uid"() AS "uid")));
+
+REVOKE ALL ON TABLE "public"."stake_events" FROM "anon", "authenticated";
+GRANT SELECT ON TABLE "public"."stake_events" TO "authenticated";
+GRANT ALL ON TABLE "public"."stake_events" TO "service_role";
+
+CREATE OR REPLACE FUNCTION "public"."log_stake_event"() RETURNS "trigger"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+begin
+  if new.status is distinct from old.status and new.status <> 'created' then
+    insert into public.stake_events (stake_id, user_uid, request_id, amount_cents, event)
+    values (new.id, new.user_uid, new.request_id, new.amount_cents, new.status);
+  end if;
+  if new.payout_status is distinct from old.payout_status and new.payout_status is not null then
+    insert into public.stake_events (stake_id, user_uid, request_id, amount_cents, event)
+    values (new.id, new.user_uid, new.request_id, new.amount_cents, 'payout_' || new.payout_status);
+  end if;
+  return new;
+end;
+$$;
+
+CREATE OR REPLACE TRIGGER "boat_stakes_log_event" AFTER UPDATE OF "status", "payout_status" ON "public"."boat_stakes" FOR EACH ROW EXECUTE FUNCTION "public"."log_stake_event"();
+
 CREATE TABLE IF NOT EXISTS "public"."boat_used_plans" (
     "plan_id" "uuid" NOT NULL,
     "request_id" "text" NOT NULL,
@@ -1116,6 +1158,9 @@ ALTER TABLE ONLY "public"."boat_requests"
 
 ALTER TABLE ONLY "public"."boat_stakes"
     ADD CONSTRAINT "boat_stakes_pkey" PRIMARY KEY ("id");
+
+ALTER TABLE ONLY "public"."stake_events"
+    ADD CONSTRAINT "stake_events_stake_id_fkey" FOREIGN KEY ("stake_id") REFERENCES "public"."boat_stakes"("id") ON DELETE CASCADE;
 
 ALTER TABLE ONLY "public"."boat_stakes"
     ADD CONSTRAINT "boat_stakes_request_id_cycle_id_user_uid_key" UNIQUE ("request_id", "cycle_id", "user_uid");

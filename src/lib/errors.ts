@@ -21,6 +21,7 @@ export const APP_ERRORS = {
   denied: "You are not allowed to do that. Please sign in again.",
   email_save: "Unable to save your PayPal email. Please try again.",
   generic: "Something went wrong. Please try again.",
+  history_load: "Unable to load your transaction history. Please try again.",
   invalid_data: "Some saved data is invalid. Please refresh and try again.",
   network: "Unable to reach the server. Check your connection and try again.",
   pairing_active:

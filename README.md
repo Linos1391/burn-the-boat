@@ -1,16 +1,21 @@
 # [Paypal AI Hackathon] Burn The Boat
 
 React, TypeScript, Vite, and shadcn/ui app backed by Supabase (Auth, Postgres,
-Realtime, Edge Functions) with PayPal-backed boat bets.
+Realtime, Edge Functions) with PayPal-backed boat bets. Every charge, payout and
+refund is recorded and shown in Settings → Transaction history.
 
 ## Setup
 
 ### 0. Prerequisites
 
-The project use all of these services, please make an account first for all of these below:
+The project use all of these API services, please make an account first for all of these below:
 - Supabase
 - Google AI Studio
 - Paypal Developer
+
+Additional free services used.
+- AG Grid (Community): the transaction history in Settings, with sorting, filtering, pagination and CSV export.
+- Render (web host)
 
 ### 1. Frontend `.env`
 
