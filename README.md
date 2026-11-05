@@ -1,8 +1,13 @@
 # [Paypal AI Hackathon 2026] Burn The Boat
 
 React, TypeScript, Vite, and shadcn/ui app backed by Supabase (Auth, Postgres,
-Realtime, Edge Functions) with PayPal-backed boat bets. Every charge, payout and
-refund is recorded and shown in Settings → Transaction history.
+Realtime, Edge Functions) with PayPal-backed boat bets and Google's Gemini. 
+
+Demo website: https://burn-the-boat.onrender.com
+
+**Privacy Notice:** By logging in the demo website, you agree that I store your
+email address and profile avatar to run your account. Use Guest account to prevent
+that. For more information, see [`PRIVACY.md`](https://github.com/Linos1391/burn-the-boat/blob/master/PRIVACY.md)
 
 ## Setup
 
