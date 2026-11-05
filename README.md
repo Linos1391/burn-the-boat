@@ -34,7 +34,9 @@ Copy `.env.example` to `.env` and fill in:
 
 ```bash
 npx supabase link --project-ref <project-ref>
-npx supabase db push
+npx supabase db push --remote
+
+# or `npx supabase db push` if use Docker
 ```
 
 ### 3. Supabase Auth settings (dashboard)
