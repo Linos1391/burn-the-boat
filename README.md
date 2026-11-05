@@ -14,7 +14,7 @@ The project use all of these API services, please make an account first for all 
 - Paypal Developer
 
 Additional free services used.
-- AG Grid (Community): the transaction history in Settings, with sorting, filtering, pagination and CSV export.
+- AG Grid Community
 - Render (web host)
 
 ### 1. Frontend `.env`
