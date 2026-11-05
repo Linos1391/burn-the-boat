@@ -468,7 +468,7 @@ export default function LoginPage({ supabase }: LoginPageProps) {
             By continuing, you agree that we store your email address to run
             your account. See our{" "}
             <a
-              href="https://github.com/Linos1391/burn-the-boat/blob/main/PRIVACY.md"
+              href="https://github.com/Linos1391/burn-the-boat/blob/master/PRIVACY.md"
               target="_blank"
               rel="noopener noreferrer"
               className="underline"
