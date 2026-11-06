@@ -17,6 +17,15 @@ import {
 } from "lucide-react"
 import { Button, buttonVariants } from "@/components/ui/button"
 import {
+  AlertDialog,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog"
+import {
   Card,
   CardContent,
   CardDescription,
@@ -83,6 +92,7 @@ import {
   cancelBoatRequest,
   createBoatRequest,
   decideBoatRequest,
+  forfeitBoatRequest,
   formatBet,
   parseBetInput,
   setPartnerBet,
@@ -127,7 +137,7 @@ type PlannerPlanSummary = {
 }
 
 type BusyAction =
-  "message" | "request" | "response" | "accept" | "deny" | "cancel"
+  "message" | "request" | "response" | "accept" | "deny" | "cancel" | "forfeit"
 
 function getPlanDifficulty(plan: Pick<BoatPlan, "totalEstimatedMinutes">) {
   const hours = plan.totalEstimatedMinutes / 60
@@ -228,6 +238,7 @@ export default function HomePage({ supabase, user }: HomePageProps) {
   const [partnerBetInput, setPartnerBetInput] = useState("")
   const sendingMessage = useRef(false)
   const [isChatOpen, setIsChatOpen] = useState(false)
+  const [isForfeitOpen, setIsForfeitOpen] = useState(false)
   const [isRequestComposerOpen, setIsRequestComposerOpen] = useState(false)
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -776,6 +787,34 @@ export default function HomePage({ supabase, user }: HomePageProps) {
     }
   }
 
+  async function onForfeitRequest() {
+    if (!supabase || !user || !selectedRequest) return
+    setBusyAction("forfeit")
+    setActionError(null)
+    try {
+      await forfeitBoatRequest(supabase, selectedRequest)
+      setBoatRequests((current) => {
+        const request = current[selectedRequest.id]
+        if (!request || request.cycleId !== selectedRequest.cycleId) return current
+        return {
+          ...current,
+          [request.id]: {
+            ...request,
+            ...(request.requesterUid === user.uid
+              ? { requesterForfeited: true }
+              : { partnerForfeited: true }),
+          },
+        }
+      })
+      setIsForfeitOpen(false)
+    } catch (forfeitError) {
+      setIsForfeitOpen(false)
+      setActionError(getErrorMessage(forfeitError, APP_ERRORS.request_update))
+    } finally {
+      setBusyAction(null)
+    }
+  }
+
   if (!supabase || !user) {
     return (
       <main className="mx-auto flex w-full max-w-3xl flex-col gap-4 p-6">
@@ -899,6 +938,7 @@ export default function HomePage({ supabase, user }: HomePageProps) {
         onOpenChange={(open) => {
           setIsChatOpen(open)
           if (!open) {
+            setIsForfeitOpen(false)
             setIsRequestComposerOpen(false)
             setActionError(null)
           }
@@ -1041,6 +1081,60 @@ export default function HomePage({ supabase, user }: HomePageProps) {
                           ? "PENDING"
                           : formatBet(selectedRequest.partnerBetCents)}
                       </p>
+                    </div>
+                  )}
+                  {selectedRequest.status === "active" && (
+                    <div className="flex flex-wrap items-center justify-between gap-2 text-sm">
+                      <div className="text-muted-foreground">
+                        {(isRequester
+                          ? selectedRequest.requesterForfeited
+                          : selectedRequest.partnerForfeited) && <p>You forfeited.</p>}
+                        {(isRequester
+                          ? selectedRequest.partnerForfeited
+                          : selectedRequest.requesterForfeited) && <p>Your partner forfeited.</p>}
+                      </div>
+                      {(isRequester || isPartner) &&
+                        !(isRequester
+                          ? selectedRequest.requesterForfeited
+                          : selectedRequest.partnerForfeited) && (
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            disabled={busyAction !== null}
+                            onClick={() => setIsForfeitOpen(true)}
+                          >
+                            Forfeit
+                          </Button>
+                        )}
+                      <AlertDialog open={isForfeitOpen} onOpenChange={setIsForfeitOpen}>
+                        <AlertDialogContent>
+                          <AlertDialogHeader>
+                            <AlertDialogTitle>Forfeit this boat?</AlertDialogTitle>
+                            <AlertDialogDescription>
+                              This cannot be undone. Your partner can still finish their plan.
+                              Your bet may be charged and paid to them. If both of you lose,
+                              each bet may be charged and paid to the other participant.
+                            </AlertDialogDescription>
+                          </AlertDialogHeader>
+                          <AlertDialogFooter>
+                            <AlertDialogCancel disabled={busyAction === "forfeit"}>
+                              Keep going
+                            </AlertDialogCancel>
+                            <Button
+                              type="button"
+                              variant="destructive"
+                              disabled={busyAction === "forfeit"}
+                              onClick={() => void onForfeitRequest()}
+                            >
+                              {busyAction === "forfeit" && (
+                                <LoaderCircle className="animate-spin" data-icon="inline-start" />
+                              )}
+                              Forfeit
+                            </Button>
+                          </AlertDialogFooter>
+                        </AlertDialogContent>
+                      </AlertDialog>
                     </div>
                   )}
                   {supabase && userId && selectedRequest.deadlineAt && (

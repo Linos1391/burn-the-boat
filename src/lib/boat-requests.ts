@@ -39,6 +39,8 @@ export type BoatRequest = {
   deadlineAt: DbTimestamp | null
   requesterBetCents: number
   partnerBetCents: number
+  requesterForfeited: boolean
+  partnerForfeited: boolean
   createdAt: DbTimestamp
 }
 
@@ -124,6 +126,8 @@ export function parseBoatRequest(value: Record<string, unknown>): BoatRequest {
     deadlineAt: value.deadline_at ? parseTimestamp(value.deadline_at) : null,
     requesterBetCents: Number(value.requester_bet_cents) || 0,
     partnerBetCents: Number(value.partner_bet_cents) || 0,
+    requesterForfeited: typeof value.requester_forfeited_at === "string",
+    partnerForfeited: typeof value.partner_forfeited_at === "string",
     createdAt: parseTimestamp(value.created_at),
   }
 }
@@ -225,6 +229,17 @@ export async function cancelBoatRequest(
   request: BoatRequest
 ) {
   const { error } = await supabase.rpc("cancel_boat_request", {
+    p_request_id: request.id,
+    p_cycle_id: request.cycleId,
+  })
+  if (error) throw error
+}
+
+export async function forfeitBoatRequest(
+  supabase: SupabaseClient,
+  request: BoatRequest
+) {
+  const { error } = await supabase.rpc("forfeit_boat_request", {
     p_request_id: request.id,
     p_cycle_id: request.cycleId,
   })
