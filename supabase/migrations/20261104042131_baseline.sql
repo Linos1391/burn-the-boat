@@ -193,7 +193,9 @@ declare
   paired public.pairings;
   current_request public.boat_requests;
   created public.boat_requests;
+  requester_saved_plan public.planner_plans;
   requester_plan_id uuid;
+  remaining_minutes integer;
 begin
   if auth.uid() is null then raise exception 'Sign in required'; end if;
   if coalesce(jsonb_typeof(p_requester_plan -> 'tasks'), '') <> 'array' then
@@ -208,13 +210,24 @@ begin
   select * into paired from public.pairings where id = p_pairing_id
     and (owner_uid = auth.uid() or partner_uid = auth.uid()) for update;
   if not found then raise exception 'Pairing not found'; end if;
-  if not exists (
-    select 1 from public.planner_plans
-    where id = requester_plan_id and owner_uid = auth.uid()
-  ) then raise exception 'Choose one of your saved plans'; end if;
+  select * into requester_saved_plan
+  from public.planner_plans
+  where id = requester_plan_id and owner_uid = auth.uid()
+  for update;
+  if not found then raise exception 'Choose one of your saved plans'; end if;
   if not exists (
     select 1 from public.planner_tasks where plan_id = requester_plan_id
   ) then raise exception 'A plan needs at least one saved step to be on a boat'; end if;
+  select coalesce(sum(task.estimated_minutes) filter (where not task.completed), 0)::integer
+  into remaining_minutes
+  from public.planner_tasks task
+  where task.plan_id = requester_plan_id;
+  p_requester_plan := jsonb_set(
+    p_requester_plan,
+    '{totalEstimatedMinutes}',
+    to_jsonb(remaining_minutes),
+    true
+  );
 
   select * into current_request from public.boat_requests where id = p_pairing_id for update;
   if found and current_request.status in ('pending', 'review', 'active') then
@@ -272,8 +285,10 @@ declare
   partner_plan_id uuid;
   requester_saved_plan public.planner_plans;
   requester_saved_tasks jsonb;
+  requester_remaining_minutes integer;
   partner_saved_plan public.planner_plans;
   partner_saved_tasks jsonb;
+  partner_remaining_minutes integer;
 begin
   if auth.uid() is null then raise exception 'Sign in required'; end if;
   if p_decision not in ('accept', 'deny') then raise exception 'Invalid request decision'; end if;
@@ -343,11 +358,15 @@ begin
   into requester_saved_tasks
   from public.planner_tasks task
   where task.plan_id = requester_plan_id;
+  select coalesce(sum(task.estimated_minutes) filter (where not task.completed), 0)::integer
+  into requester_remaining_minutes
+  from public.planner_tasks task
+  where task.plan_id = requester_plan_id;
   if requester_saved_tasks is null
     or requester_saved_tasks is distinct from (v_requester_plan -> 'tasks')
     or requester_saved_plan.title is distinct from (v_requester_plan ->> 'title')
     or requester_saved_plan.description is distinct from (v_requester_plan ->> 'description')
-    or requester_saved_plan.total_estimated_minutes is distinct from
+    or requester_remaining_minutes is distinct from
       ((v_requester_plan ->> 'totalEstimatedMinutes')::integer)
     or requester_saved_plan.mode is distinct from (v_requester_plan ->> 'mode') then
     raise exception 'Your plan changed after AI review. Review it again before accepting.';
@@ -373,13 +392,17 @@ begin
   into partner_saved_tasks
   from public.planner_tasks task
   where task.plan_id = partner_plan_id;
+  select coalesce(sum(task.estimated_minutes) filter (where not task.completed), 0)::integer
+  into partner_remaining_minutes
+  from public.planner_tasks task
+  where task.plan_id = partner_plan_id;
   if partner_saved_tasks is null
     or partner_saved_tasks is distinct from (current_request.partner_plan -> 'tasks')
     or partner_saved_plan.title is distinct from
       (current_request.partner_plan ->> 'title')
     or partner_saved_plan.description is distinct from
       (current_request.partner_plan ->> 'description')
-    or partner_saved_plan.total_estimated_minutes is distinct from
+    or partner_remaining_minutes is distinct from
       ((current_request.partner_plan ->> 'totalEstimatedMinutes')::integer)
     or partner_saved_plan.mode is distinct from
       (current_request.partner_plan ->> 'mode') then
@@ -936,8 +959,10 @@ declare
   partner_plan_id uuid;
   requester_saved_plan public.planner_plans;
   requester_saved_tasks jsonb;
+  requester_remaining_minutes integer;
   partner_saved_plan public.planner_plans;
   partner_saved_tasks jsonb;
+  partner_remaining_minutes integer;
 begin
   if auth.uid() is null then raise exception 'Sign in required'; end if;
   if coalesce(jsonb_typeof(p_partner_plan -> 'tasks'), '') <> 'array' then
@@ -981,11 +1006,15 @@ begin
   into requester_saved_tasks
   from public.planner_tasks task
   where task.plan_id = requester_plan_id;
+  select coalesce(sum(task.estimated_minutes) filter (where not task.completed), 0)::integer
+  into requester_remaining_minutes
+  from public.planner_tasks task
+  where task.plan_id = requester_plan_id;
   if requester_saved_tasks is null
     or requester_saved_tasks is distinct from (current_request.requester_plan -> 'tasks')
     or requester_saved_plan.title is distinct from (current_request.requester_plan ->> 'title')
     or requester_saved_plan.description is distinct from (current_request.requester_plan ->> 'description')
-    or requester_saved_plan.total_estimated_minutes is distinct from
+    or requester_remaining_minutes is distinct from
       ((current_request.requester_plan ->> 'totalEstimatedMinutes')::integer) then
     raise exception 'The requester changed their plan. Cancel and resend the request before responding.';
   end if;
@@ -1012,11 +1041,15 @@ begin
   into partner_saved_tasks
   from public.planner_tasks task
   where task.plan_id = partner_plan_id;
+  select coalesce(sum(task.estimated_minutes) filter (where not task.completed), 0)::integer
+  into partner_remaining_minutes
+  from public.planner_tasks task
+  where task.plan_id = partner_plan_id;
   if partner_saved_tasks is null
     or partner_saved_tasks is distinct from (p_partner_plan -> 'tasks')
     or partner_saved_plan.title is distinct from (p_partner_plan ->> 'title')
     or partner_saved_plan.description is distinct from (p_partner_plan ->> 'description')
-    or partner_saved_plan.total_estimated_minutes is distinct from
+    or partner_remaining_minutes is distinct from
       ((p_partner_plan ->> 'totalEstimatedMinutes')::integer) then
     raise exception 'Your plan changed after review. Review it again before submitting.';
   end if;
@@ -1053,7 +1086,9 @@ CREATE TABLE IF NOT EXISTS "public"."stake_events" (
     "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
     "stake_id" "uuid" NOT NULL,
     "user_uid" "uuid" NOT NULL,
+    "recipient_uid" "uuid",
     "request_id" "text" NOT NULL,
+    "cycle_id" "uuid" NOT NULL,
     "amount_cents" integer NOT NULL,
     "event" "text" NOT NULL,
     "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
@@ -1065,24 +1100,53 @@ CREATE INDEX "stake_events_user_idx" ON "public"."stake_events" USING "btree" ("
 
 ALTER TABLE "public"."stake_events" ENABLE ROW LEVEL SECURITY;
 
-CREATE POLICY "Users read their own stake events" ON "public"."stake_events" FOR SELECT TO "authenticated" USING (("user_uid" = ( SELECT "auth"."uid"() AS "uid")));
+CREATE POLICY "Users read their own stake events and received payouts"
+    ON "public"."stake_events" FOR SELECT TO "authenticated"
+    USING (
+      "user_uid" = (SELECT "auth"."uid"())
+      OR (
+        "recipient_uid" = (SELECT "auth"."uid"())
+        AND "event" = ANY (ARRAY[
+          'payout_sent'::"text",
+          'payout_failed'::"text",
+          'payout_skipped'::"text",
+          'payout_refunded'::"text"
+        ])
+      )
+    );
 
 REVOKE ALL ON TABLE "public"."stake_events" FROM "anon", "authenticated";
-GRANT SELECT ON TABLE "public"."stake_events" TO "authenticated";
+GRANT SELECT ("id", "created_at", "event", "amount_cents", "cycle_id")
+  ON TABLE "public"."stake_events" TO "authenticated";
 GRANT ALL ON TABLE "public"."stake_events" TO "service_role";
 
 CREATE OR REPLACE FUNCTION "public"."log_stake_event"() RETURNS "trigger"
     LANGUAGE "plpgsql" SECURITY DEFINER
     SET "search_path" TO ''
     AS $$
+declare
+  payout_recipient_uid uuid;
 begin
   if new.status is distinct from old.status and new.status <> 'created' then
-    insert into public.stake_events (stake_id, user_uid, request_id, amount_cents, event)
-    values (new.id, new.user_uid, new.request_id, new.amount_cents, new.status);
+    insert into public.stake_events (
+      stake_id, user_uid, request_id, cycle_id, amount_cents, event
+    )
+    values (new.id, new.user_uid, new.request_id, new.cycle_id, new.amount_cents, new.status);
   end if;
   if new.payout_status is distinct from old.payout_status and new.payout_status is not null then
-    insert into public.stake_events (stake_id, user_uid, request_id, amount_cents, event)
-    values (new.id, new.user_uid, new.request_id, new.amount_cents, 'payout_' || new.payout_status);
+    select case
+      when r.requester_uid = new.user_uid then r.partner_uid
+      else r.requester_uid
+    end
+    into payout_recipient_uid
+    from public.boat_requests r
+    where r.id = new.request_id
+      and r.cycle_id = new.cycle_id
+      and (r.requester_uid = new.user_uid or r.partner_uid = new.user_uid);
+    insert into public.stake_events (
+      stake_id, user_uid, recipient_uid, request_id, cycle_id, amount_cents, event
+    )
+    values (new.id, new.user_uid, payout_recipient_uid, new.request_id, new.cycle_id, new.amount_cents, 'payout_' || new.payout_status);
   end if;
   return new;
 end;
