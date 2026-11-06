@@ -121,6 +121,7 @@ type PlannerPlanSummary = {
   mode: "casual" | "fire" | "inferno"
   boatReady: boolean
   totalEstimatedMinutes: number
+  remainingEstimatedMinutes: number
   createdAt: DbTimestamp
   stepCount: number
 }
@@ -161,6 +162,7 @@ async function loadBoatPlan(
       typeof data.id !== "string" ||
       typeof data.title !== "string" ||
       typeof data.estimated_minutes !== "number" ||
+      typeof data.completed !== "boolean" ||
       typeof data.category !== "string" ||
       !Array.isArray(data.depends_on) ||
       !data.depends_on.every((id: unknown) => typeof id === "string")
@@ -184,7 +186,11 @@ async function loadBoatPlan(
     description: plan.description,
     mode: plan.mode,
     boatReady: plan.boatReady,
-    totalEstimatedMinutes: plan.totalEstimatedMinutes,
+    totalEstimatedMinutes: tasks.reduce(
+      (total, task) =>
+        total + (task.completed ? 0 : task.estimated_minutes),
+      0
+    ),
     tasks: parsedTasks,
   } satisfies BoatPlan
 }
@@ -398,13 +404,14 @@ export default function HomePage({ supabase, user }: HomePageProps) {
           }
         })
         const stepCounts = new Map<string, number>()
+        const remainingEstimates = new Map<string, number>()
         if (plans.length > 0) {
           const planIds = plans.map((plan) => plan.id)
           const pageSize = 1000
           for (let offset = 0; ; offset += pageSize) {
             const { data: taskRows, error: taskError } = await client
               .from("planner_tasks")
-              .select("plan_id")
+              .select("plan_id, estimated_minutes, completed")
               .in("plan_id", planIds)
               .range(offset, offset + pageSize - 1)
             if (!active) return
@@ -412,9 +419,15 @@ export default function HomePage({ supabase, user }: HomePageProps) {
               handleError(taskError)
               return
             }
-            taskRows.forEach(({ plan_id }) =>
+            taskRows.forEach(({ plan_id, estimated_minutes, completed }) => {
               stepCounts.set(plan_id, (stepCounts.get(plan_id) ?? 0) + 1)
-            )
+              if (!completed) {
+                remainingEstimates.set(
+                  plan_id,
+                  (remainingEstimates.get(plan_id) ?? 0) + estimated_minutes
+                )
+              }
+            })
             if (taskRows.length < pageSize) break
           }
         }
@@ -422,6 +435,7 @@ export default function HomePage({ supabase, user }: HomePageProps) {
           .map((plan) => ({
             ...plan,
             stepCount: stepCounts.get(plan.id) ?? 0,
+            remainingEstimatedMinutes: remainingEstimates.get(plan.id) ?? 0,
           }))
           .sort((a, b) => b.createdAt.toMillis() - a.createdAt.toMillis())
         setPlannerPlans(plansWithCounts)
@@ -676,10 +690,6 @@ export default function HomePage({ supabase, user }: HomePageProps) {
       )
       return
     }
-    if (!hasSameDifficulty(plan, selectedRequest.requesterPlan)) {
-      setActionError("Choose a plan in the same workload range.")
-      return
-    }
     if (!plan.boatReady || !selectedRequest.requesterPlan.boatReady) {
       setActionError(
         "Both plans must be approved as boat-ready by the planner AI."
@@ -704,8 +714,11 @@ export default function HomePage({ supabase, user }: HomePageProps) {
     setBusyAction("response")
     setActionError(null)
     try {
-      await setPartnerBet(supabase, selectedRequest, partnerBetCents)
       const partnerPlanSnapshot = await loadBoatPlan(supabase, plan)
+      if (!hasSameDifficulty(partnerPlanSnapshot, selectedRequest.requesterPlan)) {
+        throw new Error("Choose a plan in the same workload range.")
+      }
+      await setPartnerBet(supabase, selectedRequest, partnerBetCents)
       await submitPartnerPlan(
         supabase,
         selectedRequest,
@@ -1118,7 +1131,7 @@ export default function HomePage({ supabase, user }: HomePageProps) {
                                     {boatPlans.map((plan) => (
                                       <SelectItem key={plan.id} value={plan.id}>
                                         {plan.title} ·{" "}
-                                        {plan.totalEstimatedMinutes} min
+                                        {plan.remainingEstimatedMinutes} min remaining
                                       </SelectItem>
                                     ))}
                                   </SelectGroup>
@@ -1214,7 +1227,7 @@ export default function HomePage({ supabase, user }: HomePageProps) {
                                   {boatPlans.map((plan) => (
                                     <SelectItem key={plan.id} value={plan.id}>
                                       {plan.title} ·{" "}
-                                      {plan.totalEstimatedMinutes} min
+                                      {plan.remainingEstimatedMinutes} min remaining
                                     </SelectItem>
                                   ))}
                                 </SelectGroup>
@@ -1354,7 +1367,7 @@ export default function HomePage({ supabase, user }: HomePageProps) {
                         <SelectGroup>
                           {boatPlans.map((plan) => (
                             <SelectItem key={plan.id} value={plan.id}>
-                              {plan.title} · {plan.totalEstimatedMinutes} min ·{" "}
+                              {plan.title} · {plan.remainingEstimatedMinutes} min remaining ·{" "}
                               {getPlanDifficulty(plan)}
                             </SelectItem>
                           ))}

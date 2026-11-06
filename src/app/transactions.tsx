@@ -35,8 +35,8 @@ const EVENT_LABELS: Record<string, string> = {
   captured: "Bet charged",
   failed: "Bet failed",
   payout_failed: "Payout failed",
-  payout_refunded: "Payout refunded to you",
-  payout_sent: "Payout sent",
+  payout_refunded: "Payout refunded",
+  payout_sent: "Payout initiated",
   payout_skipped: "Payout skipped",
   refunded: "Bet refunded",
   unpaid: "Bet unpaid",
@@ -48,6 +48,7 @@ type StakeEvent = {
   createdAt: string
   event: string
   amountCents: number
+  cycleId: string
 }
 
 const columns: ColDef<StakeEvent>[] = [
@@ -57,6 +58,11 @@ const columns: ColDef<StakeEvent>[] = [
     valueFormatter: ({ value }) => (value ? value.toLocaleString() : ""),
     filter: "agDateColumnFilter",
     sort: "desc",
+  },
+  {
+    headerName: "Boat round ID",
+    field: "cycleId",
+    minWidth: 240,
   },
   {
     headerName: "Event",
@@ -89,7 +95,7 @@ export default function TransactionsCard({
     let active = true
     void supabase
       .from("stake_events")
-      .select("id, created_at, event, amount_cents")
+      .select("id, created_at, event, amount_cents, cycle_id")
       .order("created_at", { ascending: false })
       .limit(500)
       .then(({ data, error: loadError }) => {
@@ -104,6 +110,7 @@ export default function TransactionsCard({
             createdAt: String(row.created_at),
             event: String(row.event),
             amountCents: Number(row.amount_cents),
+            cycleId: String(row.cycle_id),
           }))
         )
       })

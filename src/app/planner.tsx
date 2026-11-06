@@ -962,6 +962,10 @@ export default function PlannerPage({ supabase, user }: PlannerPageProps) {
       )
       if (!review.verified) {
         setTaskVerificationMessage(review.reason)
+        setTaskEvidenceFiles([])
+        if (verificationFileInputRef.current) {
+          verificationFileInputRef.current.value = ""
+        }
         return
       }
       const { error } = await supabase
