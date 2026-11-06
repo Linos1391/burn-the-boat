@@ -70,7 +70,21 @@ begin
   p_ok := p_at is not null and p_at <= req.deadline_at;
   expired := now() >= req.deadline_at;
 
-  if req.stake_mode = 'racing' then
+  if req.requester_forfeited_at is not null or req.partner_forfeited_at is not null then
+    if req.requester_forfeited_at is not null and req.partner_forfeited_at is not null then
+      r_act := 'capture'; p_act := 'capture'; why := 'both_failed';
+    elsif req.requester_forfeited_at is not null then
+      if p_ok then
+        r_act := 'capture'; p_act := 'void'; why := 'partner_finished';
+      elsif expired then
+        r_act := 'capture'; p_act := 'capture'; why := 'both_failed';
+      end if;
+    elsif r_ok then
+      r_act := 'void'; p_act := 'capture'; why := 'requester_finished';
+    elsif expired then
+      r_act := 'capture'; p_act := 'capture'; why := 'both_failed';
+    end if;
+  elsif req.stake_mode = 'racing' then
     if r_ok and p_ok and r_at = p_at then
       r_act := 'void'; p_act := 'void'; why := 'tie';
     elsif r_ok and (not p_ok or r_at < p_at) then
@@ -177,6 +191,8 @@ CREATE TABLE IF NOT EXISTS "public"."boat_requests" (
     "deadline_at" timestamp with time zone,
     "requester_bet_cents" integer DEFAULT 0 NOT NULL,
     "partner_bet_cents" integer DEFAULT 0 NOT NULL,
+    "requester_forfeited_at" timestamp with time zone,
+    "partner_forfeited_at" timestamp with time zone,
     "settled_at" timestamp with time zone,
     CONSTRAINT "boat_requests_check" CHECK (("requester_uid" <> "partner_uid")),
     CONSTRAINT "boat_requests_partner_bet_cents_check" CHECK ((("partner_bet_cents" >= 0) AND ("partner_bet_cents" <= 50000))),
@@ -243,11 +259,52 @@ begin
     cycle_id = gen_random_uuid(), requester_uid = excluded.requester_uid,
     partner_uid = excluded.partner_uid, status = excluded.status,
     requester_plan = excluded.requester_plan, partner_plan = null,
+    requester_forfeited_at = null, partner_forfeited_at = null,
     created_at = now(), updated_at = now()
   returning * into created;
   return created;
 end;
 $$;
+
+CREATE OR REPLACE FUNCTION "public"."forfeit_boat_request"("p_request_id" "text", "p_cycle_id" "uuid") RETURNS "void"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare
+  current_request public.boat_requests;
+  outcome_settled boolean;
+  own_plan_id uuid;
+begin
+  if auth.uid() is null then raise exception 'Sign in required'; end if;
+  select * into current_request
+  from public.boat_requests
+  where id = p_request_id and cycle_id = p_cycle_id and status = 'active'
+    and (requester_uid = auth.uid() or partner_uid = auth.uid())
+  for update;
+  if not found then raise exception 'Active boat not found'; end if;
+  if current_request.deadline_at <= now() then raise exception 'The boat deadline has passed'; end if;
+  if (current_request.requester_uid = auth.uid() and current_request.requester_forfeited_at is not null)
+    or (current_request.partner_uid = auth.uid() and current_request.partner_forfeited_at is not null) then
+    raise exception 'You have already forfeited';
+  end if;
+  select settled into outcome_settled from public.boat_stake_outcome(p_request_id);
+  if outcome_settled then raise exception 'The boat outcome is already decided'; end if;
+  own_plan_id := (case when current_request.requester_uid = auth.uid()
+    then current_request.requester_plan else current_request.partner_plan end ->> 'id')::uuid;
+  if exists (select 1 from public.planner_tasks where plan_id = own_plan_id)
+    and not exists (select 1 from public.planner_tasks where plan_id = own_plan_id and not completed) then
+    raise exception 'You have already completed your plan';
+  end if;
+  update public.boat_requests set
+    requester_forfeited_at = case when requester_uid = auth.uid() then now() else requester_forfeited_at end,
+    partner_forfeited_at = case when partner_uid = auth.uid() then now() else partner_forfeited_at end,
+    updated_at = now()
+  where id = p_request_id and cycle_id = p_cycle_id;
+end;
+$$;
+
+REVOKE ALL ON FUNCTION "public"."forfeit_boat_request"("text", "uuid") FROM PUBLIC, "anon";
+GRANT EXECUTE ON FUNCTION "public"."forfeit_boat_request"("text", "uuid") TO "authenticated";
 
 CREATE TABLE IF NOT EXISTS "public"."pairing_invites" (
     "code" "text" NOT NULL,
