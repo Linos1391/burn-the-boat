@@ -1,13 +1,11 @@
 import {
-  FileState,
-  GoogleGenAI,
   Type,
   type FunctionDeclaration,
   type ContentListUnion,
   type Part,
   type Tool,
 } from "@google/genai"
-import { geminiEnv } from "./env"
+import { supabase } from "./supabase"
 import { APP_ERRORS, AppError } from "./errors"
 import { isRecord } from "./utils"
 
@@ -161,8 +159,6 @@ const REVIEW_BOAT_READINESS_TOOL: FunctionDeclaration = {
   },
 }
 
-const ai = new GoogleGenAI({ apiKey: geminiEnv.apiKey })
-
 function isTransientGeminiError(error: unknown) {
   if (!isRecord(error) || typeof error.status !== "number") return false
   return [408, 429, 500, 502, 503, 504].includes(error.status)
@@ -180,15 +176,7 @@ async function generatePlannerContent(
 ) {
   for (let attempt = 0; attempt < GEMINI_PRIMARY_ATTEMPTS; attempt += 1) {
     try {
-      return await ai.models.generateContent({
-        model: GEMINI_VERSION,
-        contents,
-        config: {
-          systemInstruction,
-          ...(responseMimeType ? { responseMimeType } : {}),
-          ...(tools ? { tools } : {}),
-        },
-      })
+      return await callGemini(GEMINI_VERSION, contents, systemInstruction, responseMimeType, tools)
     } catch (error) {
       if (!isTransientGeminiError(error)) throw error
       if (attempt < GEMINI_PRIMARY_ATTEMPTS - 1) {
@@ -199,15 +187,7 @@ async function generatePlannerContent(
 
   for (const [index, model] of GEMINI_FALLBACK_VERSIONS.entries()) {
     try {
-      return await ai.models.generateContent({
-        model,
-        contents,
-        config: {
-          systemInstruction,
-          ...(responseMimeType ? { responseMimeType } : {}),
-          ...(tools ? { tools } : {}),
-        },
-      })
+      return await callGemini(model, contents, systemInstruction, responseMimeType, tools)
     } catch (fallbackError) {
       if (!isTransientGeminiError(fallbackError)) throw fallbackError
       if (index === GEMINI_FALLBACK_VERSIONS.length - 1) {
@@ -215,6 +195,39 @@ async function generatePlannerContent(
       }
       await wait(GEMINI_RETRY_DELAY_MS)
     }
+  }
+
+  async function callGemini(
+    model: string,
+    contents: ContentListUnion,
+    systemInstruction: string,
+    responseMimeType?: "application/json",
+    tools?: Tool[]
+  ): Promise<{ text?: string; functionCalls?: Array<{ name?: string; args?: Record<string, unknown> }> }> {
+    if (!supabase) throw new AppError(APP_ERRORS.denied)
+    const { data, error } = await supabase.functions.invoke("gemini", {
+      body: { model, contents, systemInstruction, responseMimeType, tools },
+    })
+    if (error) {
+      if (error.context instanceof Response && error.context.status === 429) {
+        throw new AppError(APP_ERRORS.rate_limited)
+      }
+      if (error.context instanceof Response && error.context.status === 413) {
+        throw new AppError("Attachments are too large. Use smaller files.")
+      }
+      if (
+        error.context instanceof Response &&
+        [502, 503, 504].includes(error.context.status)
+      ) {
+        throw Object.assign(new Error(APP_ERRORS.ai_busy), {
+          status: error.context.status,
+        })
+      }
+      console.error("Gemini request failed.", error)
+      throw new AppError(APP_ERRORS.ai_busy)
+    }
+    if (!isRecord(data)) throw new AppError(APP_ERRORS.ai_invalid_response)
+    return data
   }
 
   throw new AppError(APP_ERRORS.ai_busy)
@@ -612,31 +625,19 @@ export async function verifyPlannerTaskCompletion(
 }
 
 export async function uploadPromptFile(file: File) {
-  let uploadedFile = await ai.files.upload({
-    file,
-    config: { displayName: file.name, mimeType: file.type || undefined },
+  if (!file.type || file.size > 4 * 1024 * 1024) {
+    throw new Error("Attachments must have a known file type and be at most 4 MB.")
+  }
+  return new Promise<Part>((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onerror = () => reject(new AppError(APP_ERRORS.ai_file_failed))
+    reader.onload = () => {
+      if (typeof reader.result !== "string") {
+        reject(new AppError(APP_ERRORS.ai_file_failed))
+        return
+      }
+      resolve({ inlineData: { mimeType: file.type, data: reader.result.split(",")[1] } })
+    }
+    reader.readAsDataURL(file)
   })
-
-  if (!uploadedFile.name) {
-    throw new AppError(APP_ERRORS.ai_file_failed)
-  }
-
-  const deadline = Date.now() + 60_000
-  let waitMilliseconds = 1_000
-
-  while (uploadedFile.state === FileState.PROCESSING && Date.now() < deadline) {
-    await new Promise((resolve) => setTimeout(resolve, waitMilliseconds))
-    uploadedFile = await ai.files.get({ name: uploadedFile.name ?? "Untitled" })
-    waitMilliseconds = Math.min(waitMilliseconds * 2, 5_000)
-  }
-
-  if (uploadedFile.state === FileState.FAILED) {
-    throw new AppError(APP_ERRORS.ai_file_failed, uploadedFile.error)
-  }
-
-  if (uploadedFile.state !== FileState.ACTIVE) {
-    throw new AppError(APP_ERRORS.ai_file_pending)
-  }
-
-  return uploadedFile
 }

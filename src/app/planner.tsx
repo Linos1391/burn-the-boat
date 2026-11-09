@@ -486,14 +486,7 @@ export default function PlannerPage({ supabase, user }: PlannerPageProps) {
       if (uploadedFiles.length > 0) {
         setGenerationStatus("Thinking it through…")
       }
-      uploadedFiles.forEach((file) => {
-        if (!file.uri || !file.mimeType) {
-          throw new Error("A selected file could not be prepared for Gemini.")
-        }
-        parts.push({
-          fileData: { fileUri: file.uri, mimeType: file.mimeType },
-        })
-      })
+      parts.push(...uploadedFiles)
 
       const advisorResponse = await chatWithPlannerAdvisor(
         [
@@ -950,12 +943,7 @@ export default function PlannerPage({ supabase, user }: PlannerPageProps) {
           }
         })
       )
-      const attachmentParts: Part[] = uploadedFiles.map((file) => {
-        if (!file.uri || !file.mimeType) {
-          throw new Error("An evidence file could not be prepared for Gemini.")
-        }
-        return { fileData: { fileUri: file.uri, mimeType: file.mimeType } }
-      })
+      const attachmentParts: Part[] = uploadedFiles
       const review = await verifyPlannerTaskCompletion(
         taskToVerify.title,
         attachmentParts
