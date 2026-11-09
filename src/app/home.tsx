@@ -322,10 +322,13 @@ export default function HomePage({ supabase, user }: HomePageProps) {
   const {
     stakes,
     payoutEmailUids,
+    loaded: stakesLoaded,
+    error: stakesError,
     refresh: refreshStakes,
   } = useBoatStakes(supabase, selectedRequest)
   const stakesReady =
     selectedRequest !== undefined &&
+    stakesLoaded &&
     isStakeAuthorized(
       stakes,
       selectedRequest.requesterUid,
@@ -1153,14 +1156,28 @@ export default function HomePage({ supabase, user }: HomePageProps) {
                     </div>
                   )}
                   {supabase && userId && selectedRequest.deadlineAt && (
-                    <StakePayment
-                      supabase={supabase}
-                      request={selectedRequest}
-                      userId={userId}
-                      stakes={stakes}
-                      payoutEmailUids={payoutEmailUids}
-                      onChanged={() => void refreshStakes()}
-                    />
+                    stakesError ? (
+                      <div className="flex flex-col items-start gap-2">
+                        <p role="alert" className="text-sm text-destructive">{stakesError}</p>
+                        <Button type="button" variant="outline" onClick={() => void refreshStakes()}>
+                          Retry payment details
+                        </Button>
+                      </div>
+                    ) : stakesLoaded ? (
+                      <StakePayment
+                        key={`${selectedRequest.id}:${selectedRequest.cycleId}`}
+                        supabase={supabase}
+                        request={selectedRequest}
+                        userId={userId}
+                        stakes={stakes}
+                        payoutEmailUids={payoutEmailUids}
+                        onChanged={() => void refreshStakes()}
+                      />
+                    ) : (
+                      <p role="status" className="text-sm text-muted-foreground">
+                        Loading payment details…
+                      </p>
+                    )
                   )}
                   <div className="grid gap-2 text-xs sm:grid-cols-2">
                     {[

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react"
+import { useCallback, useEffect, useRef, useState } from "react"
 import type { SupabaseClient } from "@supabase/supabase-js"
 import type { BoatRequest } from "./boat-requests"
 import { APP_ERRORS } from "./errors"
@@ -22,35 +22,61 @@ export function useBoatStakes(
     key: string
     stakes: BoatStake[]
     payoutEmailUids: string[]
-  }>({ key: "", stakes: [], payoutEmailUids: [] })
+    error: string | null
+    loaded: boolean
+  }>({ key: "", stakes: [], payoutEmailUids: [], error: null, loaded: false })
+  const sequence = useRef(0)
   const requestId = request?.id
   const cycleId = request?.cycleId
   const key = requestId && cycleId ? `${requestId}:${cycleId}` : ""
 
   const refresh = useCallback(async () => {
     if (!supabase || !requestId || !cycleId) return
-    const { data, error } = await supabase
-      .from("boat_stakes")
-      .select("user_uid, amount_cents, status, payout_status, at_risk")
-      .eq("request_id", requestId)
-      .eq("cycle_id", cycleId)
-    if (error || !data) return
-    const { data: emails } = await supabase
-      .from("boat_payout_emails")
-      .select("user_uid")
-      .eq("request_id", requestId)
-      .eq("cycle_id", cycleId)
-    setState({
-      key: `${requestId}:${cycleId}`,
-      payoutEmailUids: (emails ?? []).map((row) => row.user_uid as string),
-      stakes: data.map((row) => ({
-        userUid: row.user_uid,
-        amountCents: row.amount_cents,
-        status: row.status,
-        payoutStatus: row.payout_status,
-        atRisk: row.at_risk === true,
-      })),
-    })
+    const requestSequence = ++sequence.current
+    const currentKey = `${requestId}:${cycleId}`
+    try {
+      const [stakeResult, emailResult] = await Promise.all([
+        supabase
+          .from("boat_stakes")
+          .select("user_uid, amount_cents, status, payout_status, at_risk")
+          .eq("request_id", requestId)
+          .eq("cycle_id", cycleId),
+        supabase
+          .from("boat_payout_emails")
+          .select("user_uid")
+          .eq("request_id", requestId)
+          .eq("cycle_id", cycleId),
+      ])
+      if (stakeResult.error) throw stakeResult.error
+      if (emailResult.error) throw emailResult.error
+      if (!stakeResult.data || !emailResult.data) {
+        throw new Error("Missing payment data.")
+      }
+      if (sequence.current !== requestSequence) return
+      setState({
+        key: currentKey,
+        error: null,
+        loaded: true,
+        payoutEmailUids: emailResult.data.map((row) => row.user_uid as string),
+        stakes: stakeResult.data.map((row) => ({
+          userUid: row.user_uid,
+          amountCents: row.amount_cents,
+          status: row.status,
+          payoutStatus: row.payout_status,
+          atRisk: row.at_risk === true,
+        })),
+      })
+    } catch (error) {
+      if (sequence.current !== requestSequence) return
+      console.error("Unable to load boat payment details.", error)
+      setState({
+        key: currentKey,
+        stakes: [],
+        payoutEmailUids: [],
+        error: "Unable to load payment details. Please try again.",
+        loaded: false,
+      })
+    }
   }, [supabase, requestId, cycleId])
 
   useEffect(() => {
@@ -58,6 +84,7 @@ export function useBoatStakes(
     const first = window.setTimeout(() => void refresh(), 0)
     const timer = window.setInterval(() => void refresh(), 10000)
     return () => {
+      sequence.current += 1
       window.clearTimeout(first)
       window.clearInterval(timer)
     }
@@ -67,6 +94,8 @@ export function useBoatStakes(
   return {
     stakes: current ? state.stakes : [],
     payoutEmailUids: current ? state.payoutEmailUids : [],
+    loaded: current && state.loaded,
+    error: current ? state.error : null,
     refresh,
   }
 }
@@ -198,23 +227,42 @@ export function useDefaultPayoutEmail(
   const [state, setState] = useState<{
     userId: string
     email: string | null
+    error: string | null
   } | null>(null)
+  const sequence = useRef(0)
 
   const refresh = useCallback(async () => {
     if (!supabase) return
-    const { data } = await supabase
-      .from("user_payout_emails")
-      .select("email")
-      .eq("user_uid", userId)
-      .maybeSingle()
-    setState({ userId, email: (data?.email as string | undefined) ?? null })
+    const requestSequence = ++sequence.current
+    try {
+      const { data, error } = await supabase
+        .from("user_payout_emails")
+        .select("email")
+        .eq("user_uid", userId)
+        .maybeSingle()
+      if (error) throw error
+      if (sequence.current !== requestSequence) return
+      setState({ userId, email: (data?.email as string | undefined) ?? null, error: null })
+    } catch (error) {
+      if (sequence.current !== requestSequence) return
+      console.error("Unable to load payout email.", error)
+      setState({ userId, email: null, error: "Unable to load your payout email. Please try again." })
+    }
   }, [supabase, userId])
 
   useEffect(() => {
     const timer = window.setTimeout(() => void refresh(), 0)
-    return () => window.clearTimeout(timer)
+    return () => {
+      sequence.current += 1
+      window.clearTimeout(timer)
+    }
   }, [refresh])
 
   const current = state?.userId === userId
-  return { loaded: current, email: current ? state.email : null, refresh }
+  return {
+    loaded: current && !state.error,
+    email: current ? state.email : null,
+    error: current ? state.error : null,
+    refresh,
+  }
 }
