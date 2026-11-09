@@ -1,5 +1,7 @@
 # [Paypal AI Hackathon 2026] Burn The Boat
 
+[Check it out!](https://devpost.com/software/burn-the-boat)
+
 React, TypeScript, Vite, and shadcn/ui app backed by Supabase (Auth, Postgres,
 Realtime, Edge Functions) with PayPal-backed boat bets and Google's Gemini. 
 
@@ -84,6 +86,9 @@ select vault.create_secret('<SERVICE_ROLE_KEY>', 'service_role_key');
 
 Update the Vault secret if you rotate the service role key. Note that
 `db reset` wipes Vault, so add them again afterwards.
+After both participants forfeit, the boat remains active until settlement
+finishes; new requests for that pair are available afterward. Failed payouts
+can delay settlement.
 
 ### 7. PayPal
 
