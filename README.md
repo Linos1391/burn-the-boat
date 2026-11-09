@@ -1,5 +1,7 @@
 # [Paypal AI Hackathon 2026] Burn The Boat
 
+[Check it out!](https://devpost.com/software/burn-the-boat)
+
 React, TypeScript, Vite, and shadcn/ui app backed by Supabase (Auth, Postgres,
 Realtime, Edge Functions) with PayPal-backed boat bets and Google's Gemini. 
 
@@ -30,7 +32,6 @@ Copy `.env.example` to `.env` and fill in:
 | ------------------------ | ----------------------------------- |
 | `VITE_SUPABASE_URL`      | `https://<project-ref>.supabase.co` |
 | `VITE_SUPABASE_ANON_KEY` | Supabase publishable key            |
-| `VITE_GEMINI_API_KEY`    | Google Gemini API key               |
 | `VITE_PAYPAL_CLIENT_ID`  | PayPal REST app client ID (public)  |
 
 `VITE_*` values end up in the browser. Never put secrets in them.
@@ -59,6 +60,7 @@ npx supabase secrets set \
   SERVICE_ROLE_KEY=<service-role-key> \
   PAYPAL_CLIENT_ID=<paypal-client-id> \
   PAYPAL_CLIENT_SECRET=<paypal-client-secret> \
+  GEMINI_API_KEY=<new-gemini-api-key> \
   PAYPAL_ENV=sandbox
 ```
 
@@ -69,7 +71,11 @@ npx supabase functions deploy delete-account
 npx supabase functions deploy cleanup-inactive-guests
 npx supabase functions deploy boat-stakes
 npx supabase functions deploy settle-boat-stakes --no-verify-jwt
+npx supabase functions deploy gemini
 ```
+
+Gemini requests require a signed-in account and are limited to 30 requests per
+account per hour. Attachments are limited to 4 MB each and 6 MB per request.
 
 ### 6. Vault secrets (for scheduled jobs)
 
@@ -84,6 +90,11 @@ select vault.create_secret('<SERVICE_ROLE_KEY>', 'service_role_key');
 
 Update the Vault secret if you rotate the service role key. Note that
 `db reset` wipes Vault, so add them again afterwards.
+After both participants forfeit, the boat remains active until settlement
+finishes; new requests for that pair are available afterward. Failed payouts
+can delay settlement.
+Accounts and pairings with unresolved boats or payments cannot be deleted;
+inactive guest cleanup skips them until settlement finishes.
 
 ### 7. PayPal
 

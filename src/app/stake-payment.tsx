@@ -125,7 +125,7 @@ type PayoutEmailCardProps = {
 }
 
 export function PayoutEmailCard({ supabase, userId }: PayoutEmailCardProps) {
-  const { loaded, email, refresh } = useDefaultPayoutEmail(supabase, userId)
+  const { loaded, email, error, refresh } = useDefaultPayoutEmail(supabase, userId)
   const [editing, setEditing] = useState(false)
 
   return (
@@ -139,6 +139,14 @@ export function PayoutEmailCard({ supabase, userId }: PayoutEmailCardProps) {
         </CardDescription>
       </CardHeader>
       <CardContent className="flex flex-col gap-4">
+        {error && (
+          <div className="flex flex-col items-start gap-2">
+            <p role="alert" className="text-sm text-destructive">{error}</p>
+            <Button type="button" variant="outline" onClick={() => void refresh()}>
+              Retry
+            </Button>
+          </div>
+        )}
         {loaded && (
           <p className="flex items-center gap-2 text-sm">
             <Wallet aria-hidden="true" className="size-4 text-primary" />
@@ -192,7 +200,7 @@ type StakePaymentProps = {
 
 const STATUS_LABEL: Record<string, string> = {
   authorized: "Held",
-  captured: "Paid out",
+  captured: "Charged",
   voided: "Released",
   failed: "Failed",
   unpaid: "Unpaid",
@@ -237,16 +245,20 @@ export function StakePayment({
   const triedSaved = useRef<string | null>(null)
   useEffect(() => {
     if (!wantsEmail || emailSaved || payoutFailed) return
-    if (triedSaved.current === request.id) return
-    triedSaved.current = request.id
+    const cycleKey = `${request.id}:${request.cycleId}`
+    if (triedSaved.current === cycleKey) return
+    triedSaved.current = cycleKey
     void applySavedPayoutEmail(supabase, request.id)
       .then((email) => {
         if (!email) return
         setSavedEmail(email)
         onChanged()
       })
-      .catch(() => undefined)
-  }, [wantsEmail, emailSaved, payoutFailed, request.id, supabase, onChanged])
+      .catch((applyError: unknown) => {
+        console.error("Unable to apply saved payout email.", applyError)
+        setError("Unable to apply your saved payout email. Enter it below.")
+      })
+  }, [wantsEmail, emailSaved, payoutFailed, request.id, request.cycleId, supabase, onChanged])
 
   const saveEmail = async (email: string, confirmEmail: string) => {
     setError(null)
@@ -268,12 +280,17 @@ export function StakePayment({
     request.deadlineAt.toMillis() - request.createdAt.toMillis() >
       3 * 24 * 60 * 60 * 1000
 
-  const statusFor = (uid: string, bet: number) =>
-    bet === 0
-      ? "No bet"
-      : (STATUS_LABEL[
-          stakes.find((stake) => stake.userUid === uid)?.status ?? "created"
-        ] ?? "Not authorized")
+  const statusFor = (uid: string, bet: number) => {
+    if (bet === 0) return "No bet"
+    const stake = stakes.find((item) => item.userUid === uid)
+    if (stake?.status === "captured") {
+      if (stake.payoutStatus === "sent") return "Charged; payout initiated"
+      if (stake.payoutStatus === "failed") return "Charged; payout failed"
+      if (stake.payoutStatus === "skipped") return "Charged; payout skipped"
+      return "Charged; payout pending"
+    }
+    return STATUS_LABEL[stake?.status ?? "created"] ?? "Not authorized"
+  }
 
   return (
     <div className="flex flex-col gap-3 rounded-lg border p-3 text-sm">

@@ -1,3 +1,5 @@
+import { accountHasUnresolvedBoat } from "../_shared/unresolved-boats.ts"
+
 type AuthUser = {
   id: string
   is_anonymous: boolean
@@ -89,6 +91,7 @@ Deno.serve(async (request: Request) => {
         ) {
           continue
         }
+        if (await accountHasUnresolvedBoat(user.id)) continue
 
         const profileUrl = new URL("/rest/v1/profiles", supabaseUrl)
         profileUrl.searchParams.set("id", `eq.${user.id}`)

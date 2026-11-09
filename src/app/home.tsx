@@ -322,10 +322,13 @@ export default function HomePage({ supabase, user }: HomePageProps) {
   const {
     stakes,
     payoutEmailUids,
+    loaded: stakesLoaded,
+    error: stakesError,
     refresh: refreshStakes,
   } = useBoatStakes(supabase, selectedRequest)
   const stakesReady =
     selectedRequest !== undefined &&
+    stakesLoaded &&
     isStakeAuthorized(
       stakes,
       selectedRequest.requesterUid,
@@ -1092,6 +1095,19 @@ export default function HomePage({ supabase, user }: HomePageProps) {
                         {(isRequester
                           ? selectedRequest.partnerForfeited
                           : selectedRequest.requesterForfeited) && <p>Your partner forfeited.</p>}
+                        {(selectedRequest.requesterForfeited ||
+                          selectedRequest.partnerForfeited) && (
+                          <p>
+                            A new boat request will be available once this boat&apos;s
+                            outcome is decided and settlement completes.
+                            {selectedRequest.requesterForfeited &&
+                              selectedRequest.partnerForfeited &&
+                              " Both forfeits decide the outcome; settlement normally runs every five minutes."}
+                            {!(selectedRequest.requesterForfeited &&
+                              selectedRequest.partnerForfeited) &&
+                              " The remaining participant can finish their plan, or wait until the deadline."}
+                          </p>
+                        )}
                       </div>
                       {(isRequester || isPartner) &&
                         !(isRequester
@@ -1115,6 +1131,8 @@ export default function HomePage({ supabase, user }: HomePageProps) {
                               This cannot be undone. Your partner can still finish their plan.
                               Your bet may be charged and paid to them. If both of you lose,
                               each bet may be charged and paid to the other participant.
+                              You can request another boat with this partner after the
+                              outcome is decided and settlement completes.
                             </AlertDialogDescription>
                           </AlertDialogHeader>
                           <AlertDialogFooter>
@@ -1138,14 +1156,28 @@ export default function HomePage({ supabase, user }: HomePageProps) {
                     </div>
                   )}
                   {supabase && userId && selectedRequest.deadlineAt && (
-                    <StakePayment
-                      supabase={supabase}
-                      request={selectedRequest}
-                      userId={userId}
-                      stakes={stakes}
-                      payoutEmailUids={payoutEmailUids}
-                      onChanged={() => void refreshStakes()}
-                    />
+                    stakesError ? (
+                      <div className="flex flex-col items-start gap-2">
+                        <p role="alert" className="text-sm text-destructive">{stakesError}</p>
+                        <Button type="button" variant="outline" onClick={() => void refreshStakes()}>
+                          Retry payment details
+                        </Button>
+                      </div>
+                    ) : stakesLoaded ? (
+                      <StakePayment
+                        key={`${selectedRequest.id}:${selectedRequest.cycleId}`}
+                        supabase={supabase}
+                        request={selectedRequest}
+                        userId={userId}
+                        stakes={stakes}
+                        payoutEmailUids={payoutEmailUids}
+                        onChanged={() => void refreshStakes()}
+                      />
+                    ) : (
+                      <p role="status" className="text-sm text-muted-foreground">
+                        Loading payment details…
+                      </p>
+                    )
                   )}
                   <div className="grid gap-2 text-xs sm:grid-cols-2">
                     {[
