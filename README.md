@@ -1,28 +1,40 @@
-# [Paypal AI Hackathon 2026] Burn The Boat
+# [PayPal AI Hackathon 2026] Burn The Boat
 
 [Check it out!](https://devpost.com/software/burn-the-boat)
 
+Burn the Boat is an AI advising website that encourage disciplines by clear
+goals management and money betting system.
+
 React, TypeScript, Vite, and shadcn/ui app backed by Supabase (Auth, Postgres,
-Realtime, Edge Functions) with PayPal-backed boat bets and Google's Gemini. 
+Realtime, Edge Functions) with PayPal-backed boat bets and Google's Gemini.
 
 Demo website: https://burn-the-boat.onrender.com
 
-**Privacy Notice:** By logging in the demo website, you agree that I store your
-email address and profile avatar to run your account. Use Guest account to prevent
-that. For more information, see [`PRIVACY.md`](https://github.com/Linos1391/burn-the-boat/blob/master/PRIVACY.md)
+**Privacy Notice:** When you log in to the demo website, your email address and
+profile avatar are stored to run your account. Use a guest account to avoid
+providing them. For more information, see [PRIVACY.md](./PRIVACY.md).
+
+<div align="center">
+<img src="./assets/ai-integration.jpg" alt="AI integration" width="600">
+<p><strong>AI Integration</strong></p>
+<img src="./assets/paypal-integration.jpg" alt="PayPal integration" width="600">
+<p><strong>PayPal Integration</strong></p>
+</div>
 
 ## Setup
 
 ### 0. Prerequisites
 
-The project use all of these API services, please make an account first for all of these below:
-- Supabase
-- Google AI Studio
-- Paypal Developer
+Create accounts for these services:
 
-Additional free services used.
-- AG Grid Community
-- Render (web host)
+- **Supabase:** Database, authentication, Edge Functions, and scheduled jobs.
+- **Google AI Studio:** Gemini API access.
+- **PayPal Developer:** PayPal-backed bets and payouts.
+
+Sponsors services used:
+
+- **AG Grid Community:** Displays transaction history.
+- **Render:** Hosts the demo website.
 
 ### 1. Frontend `.env`
 
@@ -42,14 +54,14 @@ Copy `.env.example` to `.env` and fill in:
 npx supabase link --project-ref <project-ref>
 npx supabase db push --remote
 
-# or `npx supabase db push` if use Docker
+# or `npx supabase db push` if using Docker
 ```
 
 ### 3. Supabase Auth settings (dashboard)
 
 - Set the site URL and redirect URLs (local and deployed).
 - Enable Google, anonymous sign-in, and **Manual Linking**.
-- Configure email confirmation and SMTP. (optional, well I didn't)
+- Optionally, configure email confirmation and SMTP.
 
 ### 4. Edge Function secrets
 
@@ -95,6 +107,10 @@ Create a PayPal REST app (sandbox first) with **Payouts** enabled. Bets use
 account, then a PayPal Payout sends the winner's amount to their PayPal email.
 A user who bets $0 types the email for their winnings in the boat's payment
 panel.
+
+An initiated payout does not guarantee delivery: PayPal may leave it pending,
+unclaimed, or reject it. Check the individual payout status in PayPal before
+attempting to send it again.
 
 ## Development
 
