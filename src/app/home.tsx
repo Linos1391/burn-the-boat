@@ -1092,6 +1092,19 @@ export default function HomePage({ supabase, user }: HomePageProps) {
                         {(isRequester
                           ? selectedRequest.partnerForfeited
                           : selectedRequest.requesterForfeited) && <p>Your partner forfeited.</p>}
+                        {(selectedRequest.requesterForfeited ||
+                          selectedRequest.partnerForfeited) && (
+                          <p>
+                            A new boat request will be available once this boat&apos;s
+                            outcome is decided and settlement completes.
+                            {selectedRequest.requesterForfeited &&
+                              selectedRequest.partnerForfeited &&
+                              " Both forfeits decide the outcome; settlement normally runs every five minutes."}
+                            {!(selectedRequest.requesterForfeited &&
+                              selectedRequest.partnerForfeited) &&
+                              " The remaining participant can finish their plan, or wait until the deadline."}
+                          </p>
+                        )}
                       </div>
                       {(isRequester || isPartner) &&
                         !(isRequester
@@ -1115,6 +1128,8 @@ export default function HomePage({ supabase, user }: HomePageProps) {
                               This cannot be undone. Your partner can still finish their plan.
                               Your bet may be charged and paid to them. If both of you lose,
                               each bet may be charged and paid to the other participant.
+                              You can request another boat with this partner after the
+                              outcome is decided and settlement completes.
                             </AlertDialogDescription>
                           </AlertDialogHeader>
                           <AlertDialogFooter>
