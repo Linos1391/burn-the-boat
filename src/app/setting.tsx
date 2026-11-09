@@ -481,7 +481,14 @@ export default function SettingPage({ supabase, user }: SettingPageProps) {
     setIsDeletingAccount(true)
     try {
       const { error } = await supabase.functions.invoke("delete-account")
-      if (error) throw error
+      if (error) {
+        if (error.context instanceof Response && error.context.status === 409) {
+          throw new Error(
+            "Resolve your active boat and pending payments before deleting your account."
+          )
+        }
+        throw error
+      }
 
       const { error: signOutError } = await supabase.auth.signOut({
         scope: "local",

@@ -1,3 +1,5 @@
+import { accountHasUnresolvedBoat } from "../_shared/unresolved-boats.ts"
+
 Deno.serve(async (request: Request) => {
   const corsHeaders = {
     "Access-Control-Allow-Origin": "*",
@@ -53,6 +55,21 @@ Deno.serve(async (request: Request) => {
     console.error("Supabase Auth returned a user without an ID.")
     return new Response("Unable to verify account.", {
       status: 502,
+      headers: corsHeaders,
+    })
+  }
+
+  try {
+    if (await accountHasUnresolvedBoat(user.id)) {
+      return new Response("Resolve your active boat and pending payments before deleting your account.", {
+        status: 409,
+        headers: corsHeaders,
+      })
+    }
+  } catch (error) {
+    console.error("Failed to check account for unresolved boats.", error)
+    return new Response("Unable to check pending payments.", {
+      status: 500,
       headers: corsHeaders,
     })
   }

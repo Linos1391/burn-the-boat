@@ -89,6 +89,8 @@ Update the Vault secret if you rotate the service role key. Note that
 After both participants forfeit, the boat remains active until settlement
 finishes; new requests for that pair are available afterward. Failed payouts
 can delay settlement.
+Accounts and pairings with unresolved boats or payments cannot be deleted;
+inactive guest cleanup skips them until settlement finishes.
 
 ### 7. PayPal
 
