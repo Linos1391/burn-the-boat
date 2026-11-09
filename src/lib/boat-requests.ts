@@ -212,14 +212,13 @@ export async function submitPartnerPlan(
 export async function decideBoatRequest(
   supabase: SupabaseClient,
   request: BoatRequest,
-  decision: "accept" | "deny",
-  requesterPlan?: BoatPlan
+  decision: "accept" | "deny"
 ) {
   const { error } = await supabase.rpc("decide_boat_request", {
     p_request_id: request.id,
     p_cycle_id: request.cycleId,
     p_decision: decision,
-    p_requester_plan: requesterPlan ?? null,
+    p_requester_plan: null,
   })
   if (error) throw error
 }
