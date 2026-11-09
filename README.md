@@ -74,9 +74,6 @@ npx supabase functions deploy settle-boat-stakes --no-verify-jwt
 npx supabase functions deploy gemini
 ```
 
-Gemini requests require a signed-in account and are limited to 30 requests per
-account per hour. Attachments are limited to 4 MB each and 6 MB per request.
-
 ### 6. Vault secrets (for scheduled jobs)
 
 The database cron jobs (daily guest cleanup at 03:00 UTC, boat settlement every
@@ -90,11 +87,6 @@ select vault.create_secret('<SERVICE_ROLE_KEY>', 'service_role_key');
 
 Update the Vault secret if you rotate the service role key. Note that
 `db reset` wipes Vault, so add them again afterwards.
-After both participants forfeit, the boat remains active until settlement
-finishes; new requests for that pair are available afterward. Failed payouts
-can delay settlement.
-Accounts and pairings with unresolved boats or payments cannot be deleted;
-inactive guest cleanup skips them until settlement finishes.
 
 ### 7. PayPal
 
@@ -104,12 +96,6 @@ account, then a PayPal Payout sends the winner's amount to their PayPal email.
 A user who bets $0 types the email for their winnings in the boat's payment
 panel.
 
-- Deadlines are capped at 29 days (PayPal authorization lifetime).
-- Authorizations are guaranteed for 3 days. Longer boats are re-authorized once
-  near the deadline, and bets on them are capped at $50.
-- Free Supabase projects pause after a week of inactivity, which stops cron.
-  Keep the project active (or use Pro) before using real money.
-
 ## Development
 
 ```bash
@@ -118,6 +104,21 @@ npm run dev
 npm run build
 npm run lint
 ```
+
+### Notice
+
+- Gemini requests require a signed-in account and are limited to 30 requests per
+account per hour. Attachments are limited to 4 MB each and 6 MB per request.
+- After both participants forfeit, the boat remains active until settlement
+finishes; new requests for that pair are available afterward. Failed payouts
+can delay settlement.
+- Accounts and pairings with unresolved boats or payments cannot be deleted;
+inactive guest cleanup skips them until settlement finishes.
+- Deadlines are capped at 29 days (PayPal authorization lifetime).
+- Authorizations are guaranteed for 3 days. Longer boats are re-authorized once
+  near the deadline, and bets on them are capped at $50.
+- Free Supabase projects pause after a week of inactivity, which stops cron.
+  Keep the project active (or use Pro) before using real money.
 
 ## Disclosure
 

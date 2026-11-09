@@ -751,25 +751,24 @@ export default function HomePage({ supabase, user }: HomePageProps) {
     setBusyAction(decision)
     setActionError(null)
     try {
-      const plan = boatPlans.find((item) => item.id === responsePlanId)
-      let planSnapshot: BoatPlan | undefined
+      const plan = boatPlans.find(
+        (item) => item.id === selectedRequest.requesterPlan.id
+      )
       if (decision === "accept") {
         if (!plan?.boatReady || !selectedRequest.partnerPlan?.boatReady) {
           throw new Error(
             "Both plans must be approved as boat-ready by the planner AI."
           )
         }
-        planSnapshot = await loadBoatPlan(supabase, plan)
       }
-      const acceptedPlan = planSnapshot ?? selectedRequest.requesterPlan
       if (
         decision === "accept" &&
         selectedRequest.partnerPlan &&
-        !hasSameDifficulty(acceptedPlan, selectedRequest.partnerPlan)
+        !hasSameDifficulty(selectedRequest.requesterPlan, selectedRequest.partnerPlan)
       ) {
-        throw new Error("Choose a plan in the same workload range.")
+        throw new Error("The plans must be in the same workload range. Cancel and send a new request.")
       }
-      await decideBoatRequest(supabase, selectedRequest, decision, planSnapshot)
+      await decideBoatRequest(supabase, selectedRequest, decision)
     } catch (decisionError) {
       setActionError(getErrorMessage(decisionError, APP_ERRORS.request_update))
     } finally {
@@ -1325,54 +1324,12 @@ export default function HomePage({ supabase, user }: HomePageProps) {
                       <>
                         <p className="text-xs text-muted-foreground">
                           Accepting makes both boat-ready plans permanent
-                          Inferno plans. Denying rejects the boat request.
+                          Inferno plans. Your original plan is locked because
+                          your partner accepted it. To change it, cancel and
+                          send a new request.
                         </p>
                         <FieldGroup className="flex flex-col gap-2">
-                          <Field>
-                            <FieldLabel htmlFor="requester-plan">
-                              Your plan
-                            </FieldLabel>
-                            <Select
-                              items={planSelectItems}
-                              value={responsePlanId}
-                              onValueChange={(value) =>
-                                setSelectedResponsePlans((current) => ({
-                                  ...current,
-                                  [selectedPairing.id]: value ?? "",
-                                }))
-                              }
-                            >
-                              <SelectTrigger
-                                id="requester-plan"
-                                className="w-full"
-                              >
-                                <SelectValue placeholder="Choose plan" />
-                              </SelectTrigger>
-                              <SelectContent>
-                                <SelectGroup>
-                                  {boatPlans.map((plan) => (
-                                    <SelectItem key={plan.id} value={plan.id}>
-                                      {plan.title} ·{" "}
-                                      {plan.remainingEstimatedMinutes} min remaining
-                                    </SelectItem>
-                                  ))}
-                                </SelectGroup>
-                              </SelectContent>
-                            </Select>
-                          </Field>
                           <div className="flex flex-wrap justify-end gap-2">
-                            <Button
-                              type="button"
-                              variant="outline"
-                              disabled={
-                                recommendationBusy ||
-                                boatPlans.length === 0 ||
-                                busyAction !== null
-                              }
-                              onClick={() => void onRecommendPlan()}
-                            >
-                              AI pick
-                            </Button>
                             <Button
                               type="button"
                               variant="outline"
@@ -1386,7 +1343,7 @@ export default function HomePage({ supabase, user }: HomePageProps) {
                               disabled={
                                 busyAction !== null ||
                                 !boatPlans.some(
-                                  (plan) => plan.id === responsePlanId
+                                  (plan) => plan.id === selectedRequest.requesterPlan.id
                                 ) ||
                                 !selectedRequest.partnerPlan.boatReady ||
                                 !stakesReady
@@ -1408,7 +1365,7 @@ export default function HomePage({ supabase, user }: HomePageProps) {
                       </>
                     )}
 
-                  {recommendations[selectedRequest.id] && (
+                  {selectedRequest.status === "pending" && recommendations[selectedRequest.id] && (
                     <p className="text-xs text-muted-foreground">
                       AI pick:{" "}
                       {
