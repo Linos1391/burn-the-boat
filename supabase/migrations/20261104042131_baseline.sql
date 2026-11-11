@@ -529,16 +529,8 @@ begin
       select 1 from public.boat_requests r
       where r.id <> new.id and r.status in ('pending', 'review', 'active')
         and pid::text in (r.requester_plan ->> 'id', r.partner_plan ->> 'id')
-    ) or exists (
-      select 1 from public.boat_used_plans u
-      where u.plan_id = pid and u.cycle_id <> new.cycle_id
     ) then
       raise exception 'A plan can only be on one boat';
-    end if;
-    if new.status = 'active' then
-      insert into public.boat_used_plans (plan_id, request_id, cycle_id)
-      values (pid, new.id, new.cycle_id)
-      on conflict (plan_id) do nothing;
     end if;
   end loop;
   return new;
@@ -1211,13 +1203,6 @@ $$;
 
 CREATE OR REPLACE TRIGGER "boat_stakes_log_event" AFTER UPDATE OF "status", "payout_status" ON "public"."boat_stakes" FOR EACH ROW EXECUTE FUNCTION "public"."log_stake_event"();
 
-CREATE TABLE IF NOT EXISTS "public"."boat_used_plans" (
-    "plan_id" "uuid" NOT NULL,
-    "request_id" "text" NOT NULL,
-    "cycle_id" "uuid" NOT NULL,
-    "created_at" timestamp with time zone DEFAULT "now"() NOT NULL
-);
-
 CREATE TABLE IF NOT EXISTS "public"."pair_chat_messages" (
     "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
     "pairing_id" "text" NOT NULL,
@@ -1285,9 +1270,6 @@ ALTER TABLE ONLY "public"."stake_events"
 
 ALTER TABLE ONLY "public"."boat_stakes"
     ADD CONSTRAINT "boat_stakes_request_id_cycle_id_user_uid_key" UNIQUE ("request_id", "cycle_id", "user_uid");
-
-ALTER TABLE ONLY "public"."boat_used_plans"
-    ADD CONSTRAINT "boat_used_plans_pkey" PRIMARY KEY ("plan_id");
 
 ALTER TABLE ONLY "public"."pair_chat_messages"
     ADD CONSTRAINT "pair_chat_messages_pkey" PRIMARY KEY ("id");
@@ -1360,9 +1342,6 @@ ALTER TABLE ONLY "public"."boat_requests"
 
 ALTER TABLE ONLY "public"."boat_stakes"
     ADD CONSTRAINT "boat_stakes_user_uid_fkey" FOREIGN KEY ("user_uid") REFERENCES "auth"."users"("id") ON DELETE CASCADE;
-
-ALTER TABLE ONLY "public"."boat_used_plans"
-    ADD CONSTRAINT "boat_used_plans_plan_id_fkey" FOREIGN KEY ("plan_id") REFERENCES "public"."planner_plans"("id") ON DELETE CASCADE;
 
 ALTER TABLE ONLY "public"."pair_chat_messages"
     ADD CONSTRAINT "pair_chat_messages_pairing_id_fkey" FOREIGN KEY ("pairing_id") REFERENCES "public"."pairings"("id") ON DELETE CASCADE;
@@ -1439,8 +1418,6 @@ ALTER TABLE "public"."user_payout_emails" ENABLE ROW LEVEL SECURITY;
 ALTER TABLE "public"."boat_requests" ENABLE ROW LEVEL SECURITY;
 
 ALTER TABLE "public"."boat_stakes" ENABLE ROW LEVEL SECURITY;
-
-ALTER TABLE "public"."boat_used_plans" ENABLE ROW LEVEL SECURITY;
 
 ALTER TABLE "public"."pair_chat_messages" ENABLE ROW LEVEL SECURITY;
 
@@ -1608,8 +1585,6 @@ GRANT SELECT("user_uid") ON TABLE "public"."boat_payout_emails" TO "authenticate
 GRANT ALL ON TABLE "public"."user_payout_emails" TO "service_role";
 
 GRANT SELECT ON TABLE "public"."user_payout_emails" TO "authenticated";
-
-GRANT ALL ON TABLE "public"."boat_used_plans" TO "service_role";
 
 GRANT ALL ON TABLE "public"."pair_chat_messages" TO "service_role";
 GRANT SELECT,INSERT ON TABLE "public"."pair_chat_messages" TO "authenticated";
