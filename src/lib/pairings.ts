@@ -6,7 +6,9 @@ import {
   getErrorMessage,
 } from "./errors"
 import { DbTimestamp, parseTimestamp } from "./supabase"
-import { logging } from "./utils"
+import { createLogger } from "./logging"
+
+const logger = createLogger("pairings")
 
 const PAIRING_CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 export const PAIRING_CODE_LENGTH = 12
@@ -49,7 +51,7 @@ export function getExpireTime(createdTime: DbTimestamp) {
 
 export function parsePairingInvite(data: InviteRow): PairingInvite {
   if (typeof data.owner_uid !== "string" || typeof data.code !== "string") {
-    logging("error", "Data in invalid format.", `pairingInviteId=${data.code}`)
+    logger.error("Data in invalid format", { pairingInviteId: data.code })
     throw new AppError(APP_ERRORS.pairing_invalid)
   }
   return {
@@ -66,7 +68,7 @@ export function parsePairing(data: PairingRow): Pairing {
     typeof data.owner_uid !== "string" ||
     typeof data.partner_uid !== "string"
   ) {
-    logging("error", "Data in invalid format.", `pairingId=${data.id}`)
+    logger.error("Data in invalid format", { pairingId: data.id })
     throw new AppError(APP_ERRORS.pairing_invalid)
   }
   return {
@@ -114,14 +116,12 @@ export async function createPairingCode(
       }
       continue
     }
-    logging(
-      "error",
-      `Unable to create pairing invite: ${error.message}`,
-      `ownerUid=${ownerUid}`
-    )
+    logger.error(`Unable to create pairing invite: ${error.message}`, {
+      ownerUid,
+    })
     throw new AppError(APP_ERRORS.generic, error)
   }
-  logging("error", "User cannot create invite code.", `ownerUid=${ownerUid}`)
+  logger.error("User cannot create invite code", { ownerUid })
   throw new AppError(APP_ERRORS.pairing_cannot_create)
 }
 

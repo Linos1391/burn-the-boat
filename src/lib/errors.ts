@@ -1,4 +1,6 @@
-import { logging } from "./utils"
+import { createLogger } from "./logging"
+
+const logger = createLogger("errors")
 
 export const APP_ERRORS = {
   ai_busy: "Gemini is temporarily busy. Please try again in a moment.",
@@ -101,6 +103,6 @@ export function getErrorMessage(
     typeof error === "object" && error !== null && "message" in error
       ? String(error.message)
       : String(error)
-  logging("error", "Hidden error.", `detail=${detail}`)
+  logger.error("Hidden error", { detail })
   return fallback
 }

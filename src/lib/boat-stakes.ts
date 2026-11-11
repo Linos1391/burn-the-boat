@@ -2,6 +2,9 @@ import { useCallback, useEffect, useRef, useState } from "react"
 import type { SupabaseClient } from "@supabase/supabase-js"
 import type { BoatRequest } from "./boat-requests"
 import { APP_ERRORS } from "./errors"
+import { createLogger } from "./logging"
+
+const logger = createLogger("boat-stakes")
 
 export type StakeStatus =
   "created" | "authorized" | "captured" | "voided" | "failed" | "unpaid" | "refunded"
@@ -12,6 +15,30 @@ export type BoatStake = {
   status: StakeStatus
   payoutStatus: "sent" | "skipped" | "failed" | "refunded" | null
   atRisk: boolean
+}
+
+const REFRESH_INTERVAL_MS = 10000
+const MAX_RETRIES = 3
+const INITIAL_BACKOFF_MS = 500
+
+// Exponential backoff retry helper
+async function retryWithBackoff<T>(
+  fn: () => Promise<T>,
+  maxRetries: number = MAX_RETRIES
+): Promise<T> {
+  let lastError: unknown
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
+    try {
+      return await fn()
+    } catch (error) {
+      lastError = error
+      if (attempt < maxRetries - 1) {
+        const delayMs = INITIAL_BACKOFF_MS * Math.pow(2, attempt)
+        await new Promise((resolve) => setTimeout(resolve, delayMs))
+      }
+    }
+  }
+  throw lastError
 }
 
 export function useBoatStakes(
@@ -25,34 +52,59 @@ export function useBoatStakes(
     error: string | null
     loaded: boolean
   }>({ key: "", stakes: [], payoutEmailUids: [], error: null, loaded: false })
+  
   const sequence = useRef(0)
+  const abortControllerRef = useRef<AbortController | null>(null)
+  const isLoadingRef = useRef(false)
+  const visibilityHandlerRef = useRef<(() => void) | null>(null)
+  
   const requestId = request?.id
   const cycleId = request?.cycleId
   const key = requestId && cycleId ? `${requestId}:${cycleId}` : ""
 
   const refresh = useCallback(async () => {
-    if (!supabase || !requestId || !cycleId) return
+    if (!supabase || !requestId || !cycleId || isLoadingRef.current) return
+    
     const requestSequence = ++sequence.current
     const currentKey = `${requestId}:${cycleId}`
+    
+    // Cancel any in-flight request
+    abortControllerRef.current?.abort()
+    abortControllerRef.current = new AbortController()
+    
+    isLoadingRef.current = true
+    
     try {
-      const [stakeResult, emailResult] = await Promise.all([
-        supabase
-          .from("boat_stakes")
-          .select("user_uid, amount_cents, status, payout_status, at_risk")
-          .eq("request_id", requestId)
-          .eq("cycle_id", cycleId),
-        supabase
-          .from("boat_payout_emails")
-          .select("user_uid")
-          .eq("request_id", requestId)
-          .eq("cycle_id", cycleId),
-      ])
-      if (stakeResult.error) throw stakeResult.error
-      if (emailResult.error) throw emailResult.error
-      if (!stakeResult.data || !emailResult.data) {
-        throw new Error("Missing payment data.")
+      const loadData = async () => {
+        const [stakeResult, emailResult] = await Promise.all([
+          supabase
+            .from("boat_stakes")
+            .select("user_uid, amount_cents, status, payout_status, at_risk")
+            .eq("request_id", requestId)
+            .eq("cycle_id", cycleId),
+          supabase
+            .from("boat_payout_emails")
+            .select("user_uid")
+            .eq("request_id", requestId)
+            .eq("cycle_id", cycleId),
+        ])
+        
+        if (stakeResult.error) throw stakeResult.error
+        if (emailResult.error) throw emailResult.error
+        if (!stakeResult.data || !emailResult.data) {
+          throw new Error("Missing payment data.")
+        }
+        
+        return { stakeResult, emailResult }
       }
-      if (sequence.current !== requestSequence) return
+
+      const { stakeResult, emailResult } = await retryWithBackoff(loadData)
+
+      if (sequence.current !== requestSequence) {
+        logger.debug("Request cancelled due to newer sequence", { requestSequence, current: sequence.current })
+        return
+      }
+
       setState({
         key: currentKey,
         error: null,
@@ -68,7 +120,7 @@ export function useBoatStakes(
       })
     } catch (error) {
       if (sequence.current !== requestSequence) return
-      console.error("Unable to load boat payment details.", error)
+      logger.error("Unable to load boat payment details", error)
       setState({
         key: currentKey,
         stakes: [],
@@ -76,17 +128,45 @@ export function useBoatStakes(
         error: "Unable to load payment details. Please try again.",
         loaded: false,
       })
+    } finally {
+      isLoadingRef.current = false
     }
   }, [supabase, requestId, cycleId])
 
   useEffect(() => {
     if (!key) return
+
+    // Handle document visibility to pause polling when tab is hidden
+    const handleVisibilityChange = () => {
+      if (document.hidden) {
+        logger.debug("Tab hidden, pausing polling")
+      } else {
+        logger.debug("Tab visible, resuming polling")
+        void refresh()
+      }
+    }
+
+    document.addEventListener("visibilitychange", handleVisibilityChange)
+    visibilityHandlerRef.current = handleVisibilityChange
+
+    // Initial load
     const first = window.setTimeout(() => void refresh(), 0)
-    const timer = window.setInterval(() => void refresh(), 10000)
+    
+    // Set up polling interval (respects visibility)
+    const timer = window.setInterval(() => {
+      if (!document.hidden) {
+        void refresh()
+      }
+    }, REFRESH_INTERVAL_MS)
+
     return () => {
       sequence.current += 1
+      abortControllerRef.current?.abort()
       window.clearTimeout(first)
       window.clearInterval(timer)
+      if (visibilityHandlerRef.current) {
+        document.removeEventListener("visibilitychange", visibilityHandlerRef.current)
+      }
     }
   }, [key, refresh])
 
@@ -189,18 +269,22 @@ async function callStakes(
   supabase: SupabaseClient,
   body: Record<string, string>
 ) {
-  const { data, error } = await supabase.functions.invoke("boat-stakes", {
-    body,
-  })
-  if (error) {
-    const response = (error as { context?: Response }).context
-    const message = response
-      ? ((await response.json().catch(() => null)) as { error?: string } | null)
-          ?.error
-      : undefined
-    throw new Error(message ?? APP_ERRORS.paypal_step)
+  const makeRequest = async () => {
+    const { data, error } = await supabase.functions.invoke("boat-stakes", {
+      body,
+    })
+    if (error) {
+      const response = (error as { context?: Response }).context
+      const message = response
+        ? ((await response.json().catch(() => null)) as { error?: string } | null)
+            ?.error
+        : undefined
+      throw new Error(message ?? APP_ERRORS.paypal_step)
+    }
+    return data as Record<string, unknown>
   }
-  return data as Record<string, unknown>
+
+  return retryWithBackoff(makeRequest)
 }
 
 export async function createStakeOrder(
@@ -230,10 +314,17 @@ export function useDefaultPayoutEmail(
     error: string | null
   } | null>(null)
   const sequence = useRef(0)
+  const abortControllerRef = useRef<AbortController | null>(null)
 
   const refresh = useCallback(async () => {
     if (!supabase) return
+    
     const requestSequence = ++sequence.current
+    
+    // Cancel previous request
+    abortControllerRef.current?.abort()
+    abortControllerRef.current = new AbortController()
+    
     try {
       const { data, error } = await supabase
         .from("user_payout_emails")
@@ -245,7 +336,7 @@ export function useDefaultPayoutEmail(
       setState({ userId, email: (data?.email as string | undefined) ?? null, error: null })
     } catch (error) {
       if (sequence.current !== requestSequence) return
-      console.error("Unable to load payout email.", error)
+      logger.error("Unable to load payout email", error)
       setState({ userId, email: null, error: "Unable to load your payout email. Please try again." })
     }
   }, [supabase, userId])
@@ -254,6 +345,7 @@ export function useDefaultPayoutEmail(
     const timer = window.setTimeout(() => void refresh(), 0)
     return () => {
       sequence.current += 1
+      abortControllerRef.current?.abort()
       window.clearTimeout(timer)
     }
   }, [refresh])
