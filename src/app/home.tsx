@@ -16,6 +16,7 @@ import {
   X,
 } from "lucide-react"
 import { Button, buttonVariants } from "@/components/ui/button"
+import { createLogger } from "@/lib/logging"
 import {
   AlertDialog,
   AlertDialogCancel,
@@ -287,7 +288,8 @@ export default function HomePage({ supabase, user }: HomePageProps) {
       })
       .catch((lookupError: unknown) => {
         if (!cancelled) {
-          console.warn("Unable to load paired account names.", lookupError)
+          const logger = createLogger("home")
+          logger.warn("Unable to load paired account names", lookupError)
           setDisplayNameLookup({
             key: displayNameLookupKey,
             names: {},

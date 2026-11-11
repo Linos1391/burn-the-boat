@@ -13,6 +13,7 @@ import {
 } from "@/components/ui/card"
 import { Field, FieldGroup, FieldLabel } from "@/components/ui/field"
 import { Input } from "@/components/ui/input"
+import { createLogger } from "@/lib/logging"
 import { formatBet, type BoatRequest } from "@/lib/boat-requests"
 import {
   applySavedPayoutEmail,
@@ -30,6 +31,8 @@ import {
 } from "@/lib/boat-stakes"
 import { paypalEnv } from "@/lib/env"
 import { APP_ERRORS, getErrorMessage } from "@/lib/errors"
+
+const logger = createLogger("stake-payment")
 
 type PayoutEmailFormProps = {
   idPrefix: string
@@ -255,7 +258,7 @@ export function StakePayment({
         onChanged()
       })
       .catch((applyError: unknown) => {
-        console.error("Unable to apply saved payout email.", applyError)
+        logger.error("Unable to apply saved payout email", applyError)
         setError("Unable to apply your saved payout email. Enter it below.")
       })
   }, [wantsEmail, emailSaved, payoutFailed, request.id, request.cycleId, supabase, onChanged])

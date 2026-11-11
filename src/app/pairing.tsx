@@ -36,6 +36,7 @@ import {
   FieldLabel,
 } from "@/components/ui/field"
 import { Input } from "@/components/ui/input"
+import { createLogger } from "@/lib/logging"
 import {
   PAIRING_CODE_LENGTH,
   parsePairing,
@@ -112,6 +113,9 @@ export default function PairingPage({ supabase, user }: PairingPageProps) {
     displayNameLookup.unavailable
 
   useEffect(() => {
+    const displayNameLookupKey = `${user.uid}:${activePairings
+      .map((pairing) => pairing.id)
+      .join(",")}`
     let cancelled = false
     const partnerUids = activePairings.map((pairing) =>
       getPairingPartnerUid(pairing, user.uid)
@@ -128,7 +132,8 @@ export default function PairingPage({ supabase, user }: PairingPageProps) {
       })
       .catch((lookupError: unknown) => {
         if (!cancelled) {
-          console.warn("Unable to load paired account names.", lookupError)
+          const logger = createLogger("pairing")
+          logger.warn("Unable to load paired account names", lookupError)
           setDisplayNameLookup({
             key: displayNameLookupKey,
             names: {},
@@ -139,7 +144,7 @@ export default function PairingPage({ supabase, user }: PairingPageProps) {
     return () => {
       cancelled = true
     }
-  }, [activePairings, displayNameLookupKey, supabase, user.uid])
+  }, [activePairings, supabase, user.uid])
 
   useEffect(() => {
     const intervalId = window.setInterval(() => setNow(Date.now()), 1000)

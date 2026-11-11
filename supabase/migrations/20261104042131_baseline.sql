@@ -45,6 +45,10 @@ CREATE OR REPLACE FUNCTION "public"."boat_stake_outcome"("p_request_id" "text") 
     AS $$
 declare
   req public.boat_requests;
+  r_completed_tasks integer;
+  p_completed_tasks integer;
+  r_unknown_count integer;
+  p_unknown_count integer;
   r_at timestamptz;
   p_at timestamptz;
   r_ok boolean;
@@ -57,17 +61,23 @@ begin
   select * into req from public.boat_requests where id = p_request_id and status = 'active';
   if not found then raise exception 'No active boat found'; end if;
 
-  select max(t.updated_at) into r_at
+  select count(*), max(t.completed_at), count(*) filter (where t.completed_at is null and t.completed)
+  into r_completed_tasks, r_at, r_unknown_count
   from public.planner_tasks t
-  where t.plan_id = (req.requester_plan ->> 'id')::uuid
-  having bool_and(t.completed);
-  select max(t.updated_at) into p_at
+  where t.plan_id = (req.requester_plan ->> 'id')::uuid and t.completed;
+  
+  select count(*), max(t.completed_at), count(*) filter (where t.completed_at is null and t.completed)
+  into p_completed_tasks, p_at, p_unknown_count
   from public.planner_tasks t
-  where t.plan_id = (req.partner_plan ->> 'id')::uuid
-  having bool_and(t.completed);
+  where t.plan_id = (req.partner_plan ->> 'id')::uuid and t.completed;
 
-  r_ok := r_at is not null and r_at <= req.deadline_at;
-  p_ok := p_at is not null and p_at <= req.deadline_at;
+  if (r_unknown_count > 0 or p_unknown_count > 0)
+    and not (req.requester_forfeited_at is not null and req.partner_forfeited_at is not null) then
+    raise exception 'Cannot settle boat: an existing completion time is unknown; manual review required';
+  end if;
+  
+  r_ok := r_completed_tasks > 0 and r_at <= req.deadline_at;
+  p_ok := p_completed_tasks > 0 and p_at <= req.deadline_at;
   expired := now() >= req.deadline_at;
 
   if req.requester_forfeited_at is not null or req.partner_forfeited_at is not null then
@@ -528,17 +538,10 @@ begin
     if exists (
       select 1 from public.boat_requests r
       where r.id <> new.id and r.status in ('pending', 'review', 'active')
-        and pid::text in (r.requester_plan ->> 'id', r.partner_plan ->> 'id')
-    ) or exists (
-      select 1 from public.boat_used_plans u
-      where u.plan_id = pid and u.cycle_id <> new.cycle_id
+        and ((new.requester_plan ->> 'id')::uuid = pid or (new.partner_plan ->> 'id')::uuid = pid)
+        and (pid::uuid = (r.requester_plan ->> 'id')::uuid or pid::uuid = (r.partner_plan ->> 'id')::uuid)
     ) then
       raise exception 'A plan can only be on one boat';
-    end if;
-    if new.status = 'active' then
-      insert into public.boat_used_plans (plan_id, request_id, cycle_id)
-      values (pid, new.id, new.cycle_id)
-      on conflict (plan_id) do nothing;
     end if;
   end loop;
   return new;
@@ -730,33 +733,34 @@ CREATE OR REPLACE FUNCTION "public"."invalidate_boat_readiness_for_task_change"(
     SET "search_path" TO ''
     AS $$
 declare affected_plan_id uuid;
+  should_invalidate boolean;
 begin
   if tg_op = 'DELETE' then
-    update public.planner_plans
-    set boat_ready = false
-    where id = old.plan_id and boat_ready;
-    return old;
+    affected_plan_id := old.plan_id;
+    should_invalidate := true;
+  elsif tg_op = 'INSERT' then
+    affected_plan_id := new.plan_id;
+    should_invalidate := true;
+  else
+    affected_plan_id := new.plan_id;
+    should_invalidate := new.title is distinct from old.title
+      or new.estimated_minutes is distinct from old.estimated_minutes
+      or new.category is distinct from old.category
+      or new.depends_on is distinct from old.depends_on
+      or new.position is distinct from old.position
+      or old.plan_id is distinct from new.plan_id;
+    if old.plan_id is distinct from new.plan_id then
+      update public.planner_plans set boat_ready = false
+      where id = old.plan_id and boat_ready;
+    end if;
   end if;
 
-  affected_plan_id := new.plan_id;
-  if tg_op = 'INSERT'
-    or new.title is distinct from old.title
-    or new.estimated_minutes is distinct from old.estimated_minutes
-    or new.category is distinct from old.category
-    or new.depends_on is distinct from old.depends_on
-    or new.position is distinct from old.position then
-    update public.planner_plans
-    set boat_ready = false
+  if should_invalidate then
+    update public.planner_plans set boat_ready = false
     where id = affected_plan_id and boat_ready;
   end if;
 
-  if tg_op = 'UPDATE' and old.plan_id is distinct from new.plan_id then
-    update public.planner_plans
-    set boat_ready = false
-    where id = old.plan_id and boat_ready;
-  end if;
-
-  return new;
+  return case when tg_op = 'DELETE' then old else new end;
 end;
 $$;
 
@@ -1209,14 +1213,131 @@ begin
 end;
 $$;
 
-CREATE OR REPLACE TRIGGER "boat_stakes_log_event" AFTER UPDATE OF "status", "payout_status" ON "public"."boat_stakes" FOR EACH ROW EXECUTE FUNCTION "public"."log_stake_event"();
+CREATE OR REPLACE FUNCTION "public"."reset_boat_cycle_settlement"() RETURNS "trigger"
+    LANGUAGE "plpgsql"
+    SET "search_path" TO ''
+    AS $$
+begin
+  if new.cycle_id is distinct from old.cycle_id then
+    new.settled_at := null;
+  end if;
+  return new;
+end;
+$$;
 
-CREATE TABLE IF NOT EXISTS "public"."boat_used_plans" (
-    "plan_id" "uuid" NOT NULL,
-    "request_id" "text" NOT NULL,
-    "cycle_id" "uuid" NOT NULL,
-    "created_at" timestamp with time zone DEFAULT "now"() NOT NULL
-);
+CREATE OR REPLACE FUNCTION "public"."record_task_completion_time"() RETURNS "trigger"
+    LANGUAGE "plpgsql"
+    SET "search_path" TO ''
+    AS $$
+begin
+  if tg_op = 'INSERT' then
+    new.completed_at := case when new.completed then statement_timestamp() else null end;
+  elsif new.completed is distinct from old.completed then
+    new.completed_at := case when new.completed then statement_timestamp() else null end;
+  else
+    new.completed_at := old.completed_at;
+  end if;
+  return new;
+end;
+$$;
+
+CREATE OR REPLACE FUNCTION "public"."account_has_unresolved_boat"("p_uid" "uuid") RETURNS boolean
+    LANGUAGE "sql" STABLE SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+  select exists (
+    select 1 from public.pairings p
+    join public.boat_requests r on r.id = p.id
+    where (p.owner_uid = p_uid or p.partner_uid = p_uid)
+      and r.status in ('pending', 'review', 'active')
+  ) or exists (
+    select 1 from public.boat_stakes s
+    where s.status in ('created', 'authorized')
+      or (s.status = 'captured' and (s.payout_status is null or s.payout_status = 'failed'))
+    and (s.user_uid = p_uid or exists (
+      select 1 from public.pairings p
+      where p.id = s.request_id and (p.owner_uid = p_uid or p.partner_uid = p_uid)
+    ))
+  );
+$$;
+
+CREATE OR REPLACE FUNCTION "public"."block_unresolved_boat_deletion"() RETURNS "trigger"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+begin
+  if tg_table_schema = 'auth' then
+    if public.account_has_unresolved_boat(old.id) then
+      raise exception 'Account has an unresolved boat or payment';
+    end if;
+  elsif exists (
+    select 1 from public.boat_requests r
+    where r.id = old.id and r.status in ('pending', 'review', 'active')
+    union all
+    select 1 from public.boat_stakes s
+    where s.request_id = old.id
+      and (s.status in ('created', 'authorized')
+        or (s.status = 'captured' and (s.payout_status is null or s.payout_status = 'failed')))
+  ) then
+    raise exception 'Pairing has an unresolved boat or payment';
+  end if;
+  return old;
+end;
+$$;
+
+CREATE OR REPLACE FUNCTION "public"."consume_ai_request"("p_user_id" "uuid") RETURNS boolean
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare
+  recent_count integer;
+  v_now timestamptz;
+  recent_times timestamptz[];
+  all_times timestamptz[];
+begin
+  perform pg_advisory_xact_lock(hashtextextended(p_user_id::text, 91273));
+  v_now := clock_timestamp();
+  
+  insert into public.ai_request_limits (user_id, request_times) values (p_user_id, '{}')
+  on conflict (user_id) do nothing;
+  
+  select request_times into all_times from public.ai_request_limits where user_id = p_user_id;
+  
+  select array_agg(t) into recent_times from unnest(all_times) as t
+  where t > v_now - interval '1 hour';
+  
+  recent_count := coalesce(array_length(recent_times, 1), 0);
+  
+  if recent_count >= 30 then return false; end if;
+  
+  update public.ai_request_limits
+  set request_times = coalesce(recent_times, '{}') || ARRAY[v_now]
+  where user_id = p_user_id;
+  
+  return true;
+end;
+$$;
+
+CREATE OR REPLACE FUNCTION "public"."lock_reviewed_requester_plan"() RETURNS "trigger"
+    LANGUAGE "plpgsql"
+    SET "search_path" TO ''
+    AS $$
+begin
+  if old.status = 'review' and new.cycle_id = old.cycle_id then
+    if new.status = 'active' then
+      if (new.requester_plan - 'mode') is distinct from (old.requester_plan - 'mode')
+        or new.requester_plan ->> 'mode' is distinct from 'inferno' then
+        raise exception 'The requester plan cannot be changed after the partner responds. Cancel and send a new request.';
+      end if;
+    elsif new.requester_plan is distinct from old.requester_plan then
+      raise exception 'The requester plan cannot be changed after the partner responds. Cancel and send a new request.';
+    end if;
+  end if;
+  return new;
+end;
+$$;
+
+CREATE OR REPLACE TRIGGER "boat_stakes_log_event" AFTER UPDATE OF "status", "payout_status" ON "public"."boat_stakes" FOR EACH ROW EXECUTE FUNCTION "public"."log_stake_event"();
 
 CREATE TABLE IF NOT EXISTS "public"."pair_chat_messages" (
     "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
@@ -1252,6 +1373,7 @@ CREATE TABLE IF NOT EXISTS "public"."planner_tasks" (
     "depends_on" "text"[] DEFAULT '{}'::"text"[] NOT NULL,
     "position" integer NOT NULL,
     "completed" boolean DEFAULT false NOT NULL,
+    "completed_at" timestamp with time zone,
     "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
     "updated_at" timestamp with time zone DEFAULT "now"() NOT NULL,
     CONSTRAINT "planner_tasks_category_check" CHECK ((("length"("btrim"("category")) >= 1) AND ("length"("btrim"("category")) <= 100))),
@@ -1271,6 +1393,11 @@ CREATE TABLE IF NOT EXISTS "public"."profiles" (
     CONSTRAINT "profiles_display_name_length_check" CHECK (("length"("display_name") <= 254))
 );
 
+CREATE TABLE IF NOT EXISTS "public"."ai_request_limits" (
+    "user_id" "uuid" PRIMARY KEY,
+    "request_times" timestamp with time zone[] DEFAULT '{}' NOT NULL
+);
+
 ALTER TABLE ONLY "public"."boat_payout_emails"
     ADD CONSTRAINT "boat_payout_emails_pkey" PRIMARY KEY ("request_id", "cycle_id", "user_uid");
 
@@ -1285,9 +1412,6 @@ ALTER TABLE ONLY "public"."stake_events"
 
 ALTER TABLE ONLY "public"."boat_stakes"
     ADD CONSTRAINT "boat_stakes_request_id_cycle_id_user_uid_key" UNIQUE ("request_id", "cycle_id", "user_uid");
-
-ALTER TABLE ONLY "public"."boat_used_plans"
-    ADD CONSTRAINT "boat_used_plans_pkey" PRIMARY KEY ("plan_id");
 
 ALTER TABLE ONLY "public"."pair_chat_messages"
     ADD CONSTRAINT "pair_chat_messages_pkey" PRIMARY KEY ("id");
@@ -1361,9 +1485,6 @@ ALTER TABLE ONLY "public"."boat_requests"
 ALTER TABLE ONLY "public"."boat_stakes"
     ADD CONSTRAINT "boat_stakes_user_uid_fkey" FOREIGN KEY ("user_uid") REFERENCES "auth"."users"("id") ON DELETE CASCADE;
 
-ALTER TABLE ONLY "public"."boat_used_plans"
-    ADD CONSTRAINT "boat_used_plans_plan_id_fkey" FOREIGN KEY ("plan_id") REFERENCES "public"."planner_plans"("id") ON DELETE CASCADE;
-
 ALTER TABLE ONLY "public"."pair_chat_messages"
     ADD CONSTRAINT "pair_chat_messages_pairing_id_fkey" FOREIGN KEY ("pairing_id") REFERENCES "public"."pairings"("id") ON DELETE CASCADE;
 
@@ -1387,6 +1508,9 @@ ALTER TABLE ONLY "public"."planner_tasks"
 
 ALTER TABLE ONLY "public"."profiles"
     ADD CONSTRAINT "profiles_id_fkey" FOREIGN KEY ("id") REFERENCES "auth"."users"("id") ON DELETE CASCADE;
+
+ALTER TABLE ONLY "public"."ai_request_limits"
+    ADD CONSTRAINT "ai_request_limits_user_id_fkey" FOREIGN KEY ("user_id") REFERENCES "auth"."users"("id") ON DELETE CASCADE;
 
 CREATE POLICY "Boat participants can read stake status" ON "public"."boat_stakes" FOR SELECT TO "authenticated" USING ((EXISTS ( SELECT 1
    FROM "public"."boat_requests" "r"
@@ -1440,13 +1564,13 @@ ALTER TABLE "public"."boat_requests" ENABLE ROW LEVEL SECURITY;
 
 ALTER TABLE "public"."boat_stakes" ENABLE ROW LEVEL SECURITY;
 
-ALTER TABLE "public"."boat_used_plans" ENABLE ROW LEVEL SECURITY;
-
 ALTER TABLE "public"."pair_chat_messages" ENABLE ROW LEVEL SECURITY;
 
 ALTER TABLE "public"."pairing_invites" ENABLE ROW LEVEL SECURITY;
 
 ALTER TABLE "public"."pairings" ENABLE ROW LEVEL SECURITY;
+
+ALTER TABLE "public"."ai_request_limits" ENABLE ROW LEVEL SECURITY;
 
 ALTER TABLE "public"."planner_plans" ENABLE ROW LEVEL SECURITY;
 
@@ -1465,6 +1589,26 @@ ALTER PUBLICATION "supabase_realtime" ADD TABLE ONLY "public"."pairings";
 ALTER PUBLICATION "supabase_realtime" ADD TABLE ONLY "public"."planner_plans";
 
 ALTER PUBLICATION "supabase_realtime" ADD TABLE ONLY "public"."planner_tasks";
+
+CREATE TRIGGER "boat_requests_reset_cycle_settlement"
+BEFORE UPDATE OF "cycle_id" ON "public"."boat_requests"
+FOR EACH ROW EXECUTE FUNCTION "public"."reset_boat_cycle_settlement"();
+
+CREATE TRIGGER "planner_tasks_record_completion_time"
+BEFORE INSERT OR UPDATE ON "public"."planner_tasks"
+FOR EACH ROW EXECUTE FUNCTION "public"."record_task_completion_time"();
+
+CREATE TRIGGER "users_block_unresolved_boat_deletion"
+BEFORE DELETE ON "auth"."users"
+FOR EACH ROW EXECUTE FUNCTION "public"."block_unresolved_boat_deletion"();
+
+CREATE TRIGGER "pairings_block_unresolved_boat_deletion"
+BEFORE DELETE ON "public"."pairings"
+FOR EACH ROW EXECUTE FUNCTION "public"."block_unresolved_boat_deletion"();
+
+CREATE TRIGGER "boat_requests_lock_reviewed_requester_plan"
+BEFORE UPDATE ON "public"."boat_requests"
+FOR EACH ROW EXECUTE FUNCTION "public"."lock_reviewed_requester_plan"();
 
 GRANT USAGE ON SCHEMA "public" TO "anon";
 GRANT USAGE ON SCHEMA "public" TO "authenticated";
@@ -1609,8 +1753,6 @@ GRANT ALL ON TABLE "public"."user_payout_emails" TO "service_role";
 
 GRANT SELECT ON TABLE "public"."user_payout_emails" TO "authenticated";
 
-GRANT ALL ON TABLE "public"."boat_used_plans" TO "service_role";
-
 GRANT ALL ON TABLE "public"."pair_chat_messages" TO "service_role";
 GRANT SELECT,INSERT ON TABLE "public"."pair_chat_messages" TO "authenticated";
 
@@ -1669,6 +1811,17 @@ REVOKE ALL ON FUNCTION "public"."set_boat_partner_bet"(text, uuid, integer) FROM
 REVOKE ALL ON FUNCTION "public"."set_boat_terms"(text, uuid, text, timestamp WITH time zone, integer) FROM PUBLIC, "anon";
 REVOKE ALL ON FUNCTION "public"."set_plan_boat_readiness"(uuid, jsonb, boolean) FROM PUBLIC, "anon";
 REVOKE ALL ON FUNCTION "public"."submit_partner_plan"(text, uuid, jsonb) FROM PUBLIC, "anon";
+
+REVOKE ALL ON FUNCTION "public"."reset_boat_cycle_settlement"() FROM PUBLIC, "anon", "authenticated";
+REVOKE ALL ON FUNCTION "public"."record_task_completion_time"() FROM PUBLIC, "anon", "authenticated";
+REVOKE ALL ON FUNCTION "public"."account_has_unresolved_boat"(uuid) FROM PUBLIC, "anon", "authenticated";
+GRANT EXECUTE ON FUNCTION "public"."account_has_unresolved_boat"(uuid) TO "service_role";
+REVOKE ALL ON FUNCTION "public"."block_unresolved_boat_deletion"() FROM PUBLIC, "anon", "authenticated";
+REVOKE ALL ON FUNCTION "public"."consume_ai_request"(uuid) FROM PUBLIC, "anon", "authenticated";
+GRANT EXECUTE ON FUNCTION "public"."consume_ai_request"(uuid) TO "service_role";
+REVOKE ALL ON FUNCTION "public"."lock_reviewed_requester_plan"() FROM PUBLIC, "anon", "authenticated";
+
+REVOKE ALL ON TABLE "public"."ai_request_limits" FROM PUBLIC, "anon", "authenticated";
 
 -- Scheduled jobs live outside the schema dump, so they are kept in their own migration.
 -- Both need the Vault secrets project_url and service_role_key (see README).
@@ -1757,3 +1910,4 @@ $$;
 
 revoke all on function public.create_boat_request_with_terms(text, jsonb, text, timestamptz, integer) from public, anon;
 grant execute on function public.create_boat_request_with_terms(text, jsonb, text, timestamptz, integer) to authenticated, service_role;
+

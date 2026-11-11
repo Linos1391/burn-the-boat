@@ -8,6 +8,9 @@ import {
 import { supabase } from "./supabase"
 import { APP_ERRORS, AppError } from "./errors"
 import { isRecord } from "./utils"
+import { createLogger } from "./logging"
+
+const logger = createLogger("ai-module")
 
 const GEMINI_VERSION = "gemini-3.6-flash"
 const GEMINI_FALLBACK_VERSIONS = [
@@ -223,7 +226,7 @@ async function generatePlannerContent(
           status: error.context.status,
         })
       }
-      console.error("Gemini request failed.", error)
+      logger.error("Gemini request failed", error)
       throw new AppError(APP_ERRORS.ai_busy)
     }
     if (!isRecord(data)) throw new AppError(APP_ERRORS.ai_invalid_response)

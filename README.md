@@ -127,7 +127,7 @@ npm run lint
 account per hour. Attachments are limited to 4 MB each and 6 MB per request.
 - After both participants forfeit, the boat remains active until settlement
 finishes; new requests for that pair are available afterward. Failed payouts
-can delay settlement.
+can delay settlement. The settlement run every 5 minutes.
 - Accounts and pairings with unresolved boats or payments cannot be deleted;
 inactive guest cleanup skips them until settlement finishes.
 - Deadlines are capped at 29 days (PayPal authorization lifetime).
